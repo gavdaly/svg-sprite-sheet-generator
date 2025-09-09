@@ -8,7 +8,7 @@
 
 ## Parsing & Robustness
 
-- [ ] Attribute values: allow single quotes, digits, underscores, colons (e.g., `xmlns:*`), and boolean attributes.
+- [x] Attribute values: allow single quotes, digits, underscores, colons (e.g., `xmlns:*`), and boolean attributes.
 - [ ] Normalize/validate `viewBox`, `width`/`height`; handle BOM, XML prolog, comments.
 - [ ] Optional `quick-xml` parser for full XML compliance; keep lightweight fast-path.
 - [ ] Stable id generation, collision detection, and id sanitization.

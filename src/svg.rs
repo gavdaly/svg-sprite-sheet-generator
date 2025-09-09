@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use winnow::{
     PResult, Parser,
     ascii::{multispace0, multispace1},
-    combinator::{preceded, separated_pair, terminated},
+    combinator::{preceded, terminated},
     token::{take_until, take_while},
 };
 
@@ -176,15 +176,47 @@ fn transform(svgs: Vec<SvgSprite>) -> String {
 }
 
 fn parse_attribute<'s>(input: &mut &'s str) -> PResult<(&'s str, &'s str)> {
-    separated_pair(kebab_alpha1, '=', parse_value).parse_next(input)
+    // Parse an attribute in one of two forms:
+    // - key[ws]?=[ws]?value    (value can be single or double quoted)
+    // - key                    (boolean attribute; value mirrors key)
+    let key = kebab_alpha1.parse_next(input)?;
+    // Try to detect an '=' possibly surrounded by whitespace.
+    let mut lookahead = *input;
+    if parse_eq_ws.parse_next(&mut lookahead).is_ok() {
+        // There is a value. Parse it from the advanced cursor.
+        let val = parse_value.parse_next(&mut lookahead)?;
+        *input = lookahead;
+        Ok((key, val))
+    } else {
+        // Boolean attribute: use key as value to avoid empty string outputs.
+        Ok((key, key))
+    }
 }
 
 fn parse_value<'s>(input: &mut &'s str) -> PResult<&'s str> {
+    // Support both double- and single-quoted values.
+    if input.starts_with('"') {
+        return preceded('"', terminated(take_until(0.., '"'), '"')).parse_next(input);
+    }
+    if input.starts_with('\'') {
+        return preceded('\'', terminated(take_until(0.., '\''), '\''))
+            .parse_next(input);
+    }
+    // Fall back to the double-quoted parser to emit a consistent error
     preceded('"', terminated(take_until(0.., '"'), '"')).parse_next(input)
 }
 
+fn parse_eq_ws(input: &mut &str) -> PResult<char> {
+    // Consume optional whitespace, '=', optional whitespace
+    multispace0.parse_next(input)?;
+    let eq = '='.parse_next(input)?;
+    multispace0.parse_next(input)?;
+    Ok(eq)
+}
+
 fn kebab_alpha1<'s>(input: &mut &'s str) -> PResult<&'s str> {
-    take_while(1.., ('a'..='z', 'A'..='Z', '-')).parse_next(input)
+    // Allow letters, digits, hyphen, underscore, and colon (for namespaced attributes like xmlns:xlink)
+    take_while(1.., ('a'..='z', 'A'..='Z', '0'..='9', '-', '_', ':')).parse_next(input)
 }
 
 fn entry_tag<'s>(input: &mut &'s str) -> PResult<&'s str> {
@@ -218,11 +250,13 @@ fn parse_svg<'s>(input: &mut &'s str) -> PResult<(Vec<(&'s str, &'s str)>, &'s s
     Ok((attrs, children))
 }
 
-fn parse_gt<'s>(input: &mut &'s str) -> PResult<char> {
+#[cfg(test)]
+fn parse_gt(input: &mut &str) -> PResult<char> {
     preceded(multispace0, '>').parse_next(input)
 }
 
-fn parse_children<'s>(input: &mut &'s str) -> PResult<&'s str> {
+#[cfg(test)]
+fn parse_children(input: &mut &str) -> PResult<&str> {
     terminated(take_until(0.., "</svg>"), "</svg>").parse_next(input)
 }
 
@@ -276,6 +310,24 @@ mod tests {
         let result = attributes.parse_next(input).unwrap();
         let answer = vec![("fill", "#000000"), ("stroke", "red")];
         assert_eq!(result, answer);
+    }
+    #[test]
+    fn parse_attribute_single_quoted() {
+        let input = &mut "width='24'";
+        let result = parse_attribute.parse_next(input).unwrap();
+        assert_eq!(result, ("width", "24"));
+    }
+    #[test]
+    fn parse_attribute_colon_underscore_digits_in_key() {
+        let input = &mut "data_2d:mode=\"on\"";
+        let result = parse_attribute.parse_next(input).unwrap();
+        assert_eq!(result, ("data_2d:mode", "on"));
+    }
+    #[test]
+    fn parse_boolean_attribute() {
+        let input = &mut "focusable";
+        let result = parse_attribute.parse_next(input).unwrap();
+        assert_eq!(result, ("focusable", "focusable"));
     }
     #[test]
     fn parse_svg_simple() {
