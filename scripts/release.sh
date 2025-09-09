@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Always operate from the repo root so paths are stable
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  REPO_ROOT=$(git rev-parse --show-toplevel)
+  cd "$REPO_ROOT"
+else
+  # Fallback: cd to the parent of the script's directory
+  SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+  cd "$(dirname -- "$SCRIPT_DIR")"
+fi
+
 usage() {
   cat <<USAGE
 Release helper: bump version and tag.
@@ -9,8 +19,9 @@ Usage:
   scripts/release.sh [options] <major|minor|patch|X.Y.Z>
 
 Options:
-  --dry-run     Print actions without changing anything
-  --no-push     Do not push commits/tags to origin
+  --dry-run            Print actions without changing anything
+  --no-push            Do not push commits/tags to origin
+  --use-cargo-release  Delegate to 'cargo release' (requires network unless configured)
 
 Notes:
   - If 'cargo-release' is installed, this script will delegate to it.
@@ -84,6 +95,8 @@ delegate_to_cargo_release() {
   local spec="$1" dry_run="$2" no_push="$3"
   local args=("release" "$spec")
   if [[ "$dry_run" == "1" ]]; then args+=("--dry-run"); else args+=("--execute"); fi
+  # Avoid network-dependent steps when delegating
+  args+=("--no-publish" "--no-verify")
   if [[ "$no_push" == "1" ]]; then args+=("--no-push"); fi
   echo "[release] Using cargo-release: cargo ${args[*]}"
   cargo "${args[@]}"
@@ -95,19 +108,23 @@ manual_release() {
 
   echo "[release] New version: $new_version (tag: $tag)"
 
-  if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-    echo "error: tag $tag already exists" >&2
-    exit 1
-  fi
-
   if [[ "$dry_run" == "1" ]]; then
     echo "[dry-run] Would update Cargo.toml version -> $new_version"
     echo "[dry-run] Would run dev checks"
-    echo "[dry-run] Would commit and tag $tag"
+    if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+      echo "[dry-run] Tag $tag already exists; would skip creating it or would require deletion"
+    else
+      echo "[dry-run] Would commit and tag $tag"
+    fi
     if [[ "$no_push" == "0" ]]; then
       echo "[dry-run] Would push commits and tag to origin"
     fi
     return 0
+  fi
+
+  if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+    echo "error: tag $tag already exists" >&2
+    exit 1
   fi
 
   # Update Cargo.toml version
@@ -127,12 +144,13 @@ manual_release() {
 }
 
 main() {
-  local dry_run=0 no_push=0
+  local dry_run=0 no_push=0 use_cargo_release=${USE_CARGO_RELEASE:-0}
   local spec=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run) dry_run=1; shift ;;
       --no-push) no_push=1; shift ;;
+      --use-cargo-release) use_cargo_release=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) spec="$1"; shift ;;
     esac
@@ -142,27 +160,29 @@ main() {
     usage; exit 1
   fi
 
-  ensure_clean_tree
+  # Enforce clean tree only for actual execution
+  if [[ "$dry_run" == "0" ]]; then
+    ensure_clean_tree
+  fi
 
   # Determine desired new version
   local current new_version
-  current=$(get_current_version)
-  if [[ -z "$current" ]]; then
-    echo "error: could not read current version from Cargo.toml" >&2
-    exit 1
-  fi
-
-  if [[ "$spec" == "major" || "$spec" == "minor" || "$spec" == "patch" ]]; then
-    new_version=$(compute_bump "$current" "$spec")
-  elif is_semver "$spec"; then
+  if is_semver "$spec"; then
     new_version="$spec"
+  elif [[ "$spec" == "major" || "$spec" == "minor" || "$spec" == "patch" ]]; then
+    current=$(get_current_version)
+    if [[ -z "$current" ]]; then
+      echo "error: could not read current version from Cargo.toml" >&2
+      exit 1
+    fi
+    new_version=$(compute_bump "$current" "$spec")
   else
     echo "error: spec must be one of major|minor|patch or X.Y.Z" >&2
     exit 1
   fi
 
-  # Prefer cargo-release if available
-  if cargo release -V >/dev/null 2>&1 || command -v cargo-release >/dev/null 2>&1; then
+  # Delegate to cargo-release only when explicitly requested
+  if [[ "$use_cargo_release" == "1" ]] && (cargo release -V >/dev/null 2>&1 || command -v cargo-release >/dev/null 2>&1); then
     # Ensure code passes checks before delegating
     if [[ "$dry_run" == "0" ]]; then run_checks; fi
     delegate_to_cargo_release "$spec" "$dry_run" "$no_push"
@@ -172,4 +192,3 @@ main() {
 }
 
 main "$@"
-
