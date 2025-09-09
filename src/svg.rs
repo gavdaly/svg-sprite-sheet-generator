@@ -1,5 +1,5 @@
 use crate::error::AppError;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use winnow::{
@@ -79,15 +79,21 @@ pub fn watch(directory: &str, file: &str) -> Result<(), AppError> {
 }
 
 fn dir_state_hash(directory: &str) -> Result<u64, AppError> {
-    let entries = std::fs::read_dir(directory)
-        .map_err(|e| AppError::ReadDir { path: directory.to_string(), source: e })?;
+    let entries = std::fs::read_dir(directory).map_err(|e| AppError::ReadDir {
+        path: directory.to_string(),
+        source: e,
+    })?;
     let mut hasher = DefaultHasher::new();
     for entry in entries {
         let Ok(entry) = entry else { continue };
         let _path = entry.path();
         let file_name = entry.file_name();
-        let Ok(name_str) = file_name.into_string() else { continue };
-        if !name_str.ends_with(".svg") { continue }
+        let Ok(name_str) = file_name.into_string() else {
+            continue;
+        };
+        if !name_str.ends_with(".svg") {
+            continue;
+        }
         name_str.hash(&mut hasher);
         if let Ok(md) = entry.metadata() {
             md.len().hash(&mut hasher);
@@ -113,6 +119,8 @@ fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
     })?;
 
     let mut sprites = Vec::new();
+    // Global registry of ids to detect duplicates across all inputs
+    let mut id_registry: HashMap<String, String> = HashMap::new(); // id -> first_path
     for entry in entries {
         let entry = entry.map_err(|e| AppError::ReadDir {
             path: directory.to_string(),
@@ -134,11 +142,61 @@ fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
         let mut s = content.as_str();
         match parse_svg.parse_next(&mut s) {
             Ok((attributes, children)) => {
-                sprites.push(SvgSprite::new(name, attributes, children.to_string()));
+                // Convert attributes and handle root <svg id> policy: move id -> data-id after sanitization
+                let mut out_attrs: Vec<(String, String)> = Vec::new();
+                let mut root_id_raw: Option<&str> = None;
+                for (k, v) in &attributes {
+                    if *k == "id" {
+                        root_id_raw = Some(v);
+                    } else {
+                        out_attrs.push(((*k).to_string(), (*v).to_string()));
+                    }
+                }
+
+                if let Some(idv) = root_id_raw {
+                    let sanitized = sanitize_id(idv);
+                    if sanitized.is_empty() {
+                        return Err(AppError::InvalidIdAfterSanitize {
+                            path: path.display().to_string(),
+                            original: idv.to_string(),
+                        });
+                    }
+                    // Check if root id is referenced internally
+                    if references_id(children, idv) {
+                        return Err(AppError::RootIdReferenced {
+                            path: path.display().to_string(),
+                            id: idv.to_string(),
+                        });
+                    }
+                    out_attrs.push(("data-id".to_string(), sanitized));
+                }
+
+                // Scan children for element ids and detect collisions across files
+                let child_ids = extract_ids(children);
+                for cid in child_ids {
+                    if let Some(first) = id_registry.get(&cid) {
+                        return Err(AppError::IdCollision {
+                            id: cid,
+                            first_path: first.clone(),
+                            second_path: path.display().to_string(),
+                        });
+                    } else {
+                        id_registry.insert(cid, path.display().to_string());
+                    }
+                }
+
+                sprites.push(SvgSprite {
+                    name,
+                    attributes: out_attrs,
+                    children: children.to_string(),
+                });
             }
             Err(e) => {
                 let p = path.display().to_string();
-                return Err(AppError::ParseSvg { path: p, message: format!("{e:?}") });
+                return Err(AppError::ParseSvg {
+                    path: p,
+                    message: format!("{e:?}"),
+                });
             }
         }
     }
@@ -151,6 +209,118 @@ fn write_sprite(sprite: &str, file: &str) -> Result<(), AppError> {
         path: file.to_string(),
         source: e,
     })
+}
+
+// Sanitize an id by dropping leading invalid chars and replacing internal
+// invalid chars with '-'. Collapse multiple '-' and trim them at ends.
+// Allowed pattern: [A-Za-z_][A-Za-z0-9._-]*
+fn sanitize_id(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut it = raw.chars().peekable();
+    // Drop leading invalid until first valid start char
+    while let Some(&ch) = it.peek() {
+        if is_valid_id_start(ch) {
+            break;
+        }
+        it.next();
+    }
+    // Process the rest
+    let mut prev_dash = false;
+    while let Some(ch) = it.next() {
+        if is_valid_id_continue(ch) || is_valid_id_start(ch) {
+            out.push(ch);
+            prev_dash = false;
+        } else {
+            if !prev_dash {
+                out.push('-');
+                prev_dash = true;
+            }
+        }
+    }
+    // Trim leading/trailing '-'
+    while out.starts_with('-') {
+        out.remove(0);
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    // Collapse any "--" sequences that might remain (defensive)
+    while out.contains("--") {
+        out = out.replace("--", "-");
+    }
+    out
+}
+
+fn is_valid_id_start(ch: char) -> bool {
+    (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_'
+}
+fn is_valid_id_continue(ch: char) -> bool {
+    (ch >= 'A' && ch <= 'Z')
+        || (ch >= 'a' && ch <= 'z')
+        || (ch >= '0' && ch <= '9')
+        || ch == '.'
+        || ch == '_'
+        || ch == '-'
+}
+
+// Detect simple references to an id within content: href="#id", xlink:href="#id", or url(#id)
+fn references_id(content: &str, id: &str) -> bool {
+    content.contains(&format!("href=\"#{id}\""))
+        || content.contains(&format!("xlink:href=\"#{id}\""))
+        || content.contains(&format!("href='#{id}'"))
+        || content.contains(&format!("xlink:href='#{id}'"))
+        || content.contains(&format!("url(#{})", format!("#{id}")))
+}
+
+// Extract all id attribute values from a chunk of SVG/XML text.
+// This is a lightweight scan that matches id="..." and id='...'
+// and avoids matching names like data-id by checking the preceding char.
+fn extract_ids(s: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Look for id=" or id='
+        if i + 4 <= bytes.len() && &bytes[i..i + 3] == b"id=" {
+            let prev = i.checked_sub(1).and_then(|j| bytes.get(j)).copied();
+            if let Some(p) = prev {
+                // If prev is a name char, it's likely part of a longer attr (e.g., data-id)
+                if is_name_char(p as char) {
+                    i += 1;
+                    continue;
+                }
+            }
+            // Determine quote
+            if i + 4 <= bytes.len() {
+                let quote = bytes[i + 3] as char;
+                if quote == '"' || quote == '\'' {
+                    let start = i + 4;
+                    let mut j = start;
+                    while j < bytes.len() {
+                        if bytes[j] as char == quote {
+                            if let Ok(val) = std::str::from_utf8(&bytes[start..j]) {
+                                ids.push(val.to_string());
+                            }
+                            i = j + 1;
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if j >= bytes.len() {
+                        // Unclosed quote; abort scan
+                        break;
+                    }
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    ids
+}
+
+fn is_name_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == ':'
 }
 
 /// Transfrom a group of svgs into a single svg as a string
@@ -199,8 +369,7 @@ fn parse_value<'s>(input: &mut &'s str) -> PResult<&'s str> {
         return preceded('"', terminated(take_until(0.., '"'), '"')).parse_next(input);
     }
     if input.starts_with('\'') {
-        return preceded('\'', terminated(take_until(0.., '\''), '\''))
-            .parse_next(input);
+        return preceded('\'', terminated(take_until(0.., '\''), '\'')).parse_next(input);
     }
     // Fall back to the double-quoted parser to emit a consistent error
     preceded('"', terminated(take_until(0.., '"'), '"')).parse_next(input)
@@ -234,8 +403,13 @@ fn attributes<'s>(input: &mut &'s str) -> PResult<Vec<(&'s str, &'s str)>> {
         loop {
             let checkpoint = *input;
             match preceded(multispace1, parse_attribute).parse_next(input) {
-                Ok(attr) => { out.push(attr); },
-                Err(_) => { *input = checkpoint; break; }
+                Ok(attr) => {
+                    out.push(attr);
+                }
+                Err(_) => {
+                    *input = checkpoint;
+                    break;
+                }
             }
         }
     }
@@ -256,15 +430,15 @@ fn parse_gt(input: &mut &str) -> PResult<char> {
 }
 
 #[cfg(test)]
-fn parse_children(input: &mut &str) -> PResult<&str> {
+fn parse_children<'a>(input: &'a mut &'a str) -> PResult<&'a str> {
     terminated(take_until(0.., "</svg>"), "</svg>").parse_next(input)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winnow::Parser;
     use std::{fs, path::PathBuf};
+    use winnow::Parser;
 
     // Simple temp dir guard to keep tests isolated
     struct TempDir(PathBuf);
@@ -278,10 +452,14 @@ mod tests {
             fs::create_dir_all(&p).unwrap();
             TempDir(p)
         }
-        fn path(&self) -> &std::path::Path { &self.0 }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
     }
     impl Drop for TempDir {
-        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
     #[test]
     fn parse_attribute_test() {
@@ -388,23 +566,33 @@ mod tests {
     #[test]
     fn transform_emits_pattern_per_file() {
         let svgs = vec![
-            SvgSprite::new("one".into(), vec![("width", "24"), ("height", "24")], "<g/>".into()),
+            SvgSprite::new(
+                "one".into(),
+                vec![("width", "24"), ("height", "24")],
+                "<g/>".into(),
+            ),
             SvgSprite::new("two".into(), vec![("fill", "#000")], "<circle/>".into()),
         ];
         let out = transform(svgs);
         assert!(out.starts_with("<svg"));
         assert!(out.contains("<defs>"));
-        assert!(out.contains("<pattern id=\"one\" width=\"24\" height=\"24\"><g/>") );
-        assert!(out.contains("<pattern id=\"two\" fill=\"#000\"><circle/>") );
+        assert!(out.contains("<pattern id=\"one\" width=\"24\" height=\"24\"><g/>"));
+        assert!(out.contains("<pattern id=\"two\" fill=\"#000\"><circle/>"));
         assert!(out.ends_with("</defs></svg>"));
     }
 
     #[test]
     fn process_empty_directory_yields_error() {
         let tmp = TempDir::new("svg_sheet_empty");
-        let err = process(tmp.path().to_str().unwrap(), &tmp.path().join("out.svg").display().to_string())
-            .expect_err("expected error");
-        match err { AppError::NoSvgFiles { .. } => {}, _ => panic!("wrong error: {err}") }
+        let err = process(
+            tmp.path().to_str().unwrap(),
+            &tmp.path().join("out.svg").display().to_string(),
+        )
+        .expect_err("expected error");
+        match err {
+            AppError::NoSvgFiles { .. } => {}
+            _ => panic!("wrong error: {err}"),
+        }
     }
 
     #[test]
@@ -412,7 +600,11 @@ mod tests {
         let tmp = TempDir::new("svg_sheet_build");
         let dir = tmp.path();
         // Create a couple of minimal SVGs
-        fs::write(dir.join("a.svg"), "<svg width=\"10\" height=\"10\"><rect/></svg>").unwrap();
+        fs::write(
+            dir.join("a.svg"),
+            "<svg width=\"10\" height=\"10\"><rect/></svg>",
+        )
+        .unwrap();
         fs::write(dir.join("b.svg"), "<svg id=\"b\"><g/></svg>").unwrap();
         let out = dir.join("sprite.svg");
         process(dir.to_str().unwrap(), out.to_str().unwrap()).expect("build ok");
@@ -432,5 +624,61 @@ mod tests {
         fs::write(dir.join("c.svg"), "<svg id=\"c2\"></svg>").unwrap();
         let h2 = dir_state_hash(dir.to_str().unwrap()).expect("hash2");
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn sanitize_id_drops_leading_and_replaces_invalids() {
+        assert_eq!(sanitize_id("123abc"), "abc");
+        assert_eq!(sanitize_id("-foo"), "foo");
+        assert_eq!(sanitize_id("💥x"), "x");
+        assert_eq!(sanitize_id("data icon@1.5x"), "data-icon-1.5x");
+    }
+
+    #[test]
+    fn root_svg_id_is_moved_to_data_id_and_sanitized() {
+        let tmp = TempDir::new("root_id_move");
+        let dir = tmp.path();
+        fs::write(
+            dir.join("logo.svg"),
+            "<svg id=\"123Logo\" width=\"1\" height=\"1\"><g/></svg>",
+        )
+        .unwrap();
+        let out = dir.join("sprite.svg");
+        process(dir.to_str().unwrap(), out.to_str().unwrap()).expect("build ok");
+        let sprite = fs::read_to_string(&out).expect("read sprite");
+        // id removed, data-id present with sanitized value "Logo"
+        assert!(sprite.contains("data-id=\"Logo\""));
+        assert!(!sprite.contains(" id=\"123Logo\""));
+    }
+
+    #[test]
+    fn root_svg_id_reference_causes_error() {
+        let tmp = TempDir::new("root_id_ref");
+        let dir = tmp.path();
+        fs::write(
+            dir.join("r.svg"),
+            "<svg id=\"root\"><use href=\"#root\"/></svg>",
+        )
+        .unwrap();
+        let out = dir.join("sprite.svg");
+        let err = process(dir.to_str().unwrap(), out.to_str().unwrap()).expect_err("should err");
+        match err {
+            AppError::RootIdReferenced { .. } => {}
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn id_collision_across_files_errors() {
+        let tmp = TempDir::new("id_collision");
+        let dir = tmp.path();
+        fs::write(dir.join("a.svg"), "<svg width='1'><g id=\"dup\"/></svg>").unwrap();
+        fs::write(dir.join("b.svg"), "<svg width='1'><g id=\"dup\"/></svg>").unwrap();
+        let out = dir.join("sprite.svg");
+        let err = process(dir.to_str().unwrap(), out.to_str().unwrap()).expect_err("should err");
+        match err {
+            AppError::IdCollision { id, .. } => assert_eq!(id, "dup"),
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }

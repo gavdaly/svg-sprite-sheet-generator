@@ -22,6 +22,22 @@ pub enum AppError {
     NoSvgFiles {
         path: String,
     },
+    /// Duplicate id detected across inputs
+    IdCollision {
+        id: String,
+        first_path: String,
+        second_path: String,
+    },
+    /// Root <svg> had an id that is referenced inside the document
+    RootIdReferenced {
+        path: String,
+        id: String,
+    },
+    /// An id became empty after sanitization
+    InvalidIdAfterSanitize {
+        path: String,
+        original: String,
+    },
 }
 
 impl fmt::Display for AppError {
@@ -34,6 +50,18 @@ impl fmt::Display for AppError {
                 write!(f, "failed to parse svg ({path}): {message}")
             }
             AppError::NoSvgFiles { path } => write!(f, "no SVG files found in directory: {path}"),
+            AppError::IdCollision { id, first_path, second_path } => write!(
+                f,
+                "duplicate id '{id}' found in {second_path}; already defined in {first_path}"
+            ),
+            AppError::RootIdReferenced { path, id } => write!(
+                f,
+                "root <svg> id '{id}' in {path} is referenced inside the document; root ids are moved to data-id"
+            ),
+            AppError::InvalidIdAfterSanitize { path, original } => write!(
+                f,
+                "id '{original}' in {path} is empty after sanitization"
+            ),
         }
     }
 }
