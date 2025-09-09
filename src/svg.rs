@@ -1,4 +1,7 @@
 use crate::error::AppError;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use winnow::{
     PResult, Parser,
     ascii::{multispace0, multispace1},
@@ -43,6 +46,65 @@ pub fn process(directory: &str, file: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Watch a directory for changes and rebuild the sprite when inputs change.
+pub fn watch(directory: &str, file: &str) -> Result<(), AppError> {
+    println!("Watching '{directory}' -> '{file}' (Ctrl+C to stop)");
+    // Initial build
+    if let Err(e) = process(directory, file) {
+        eprintln!("Initial build failed: {e}");
+        if let Some(src) = std::error::Error::source(&e) {
+            eprintln!("Caused by: {src}");
+        }
+    } else {
+        println!("Initial build completed");
+    }
+
+    let mut last: Option<u64> = None;
+    loop {
+        let state = dir_state_hash(directory)?;
+        if last.as_ref().is_none_or(|l| *l != state) {
+            match process(directory, file) {
+                Ok(()) => println!("Rebuilt sprite at {:?}", SystemTime::now()),
+                Err(e) => {
+                    eprintln!("Rebuild failed: {e}");
+                    if let Some(src) = std::error::Error::source(&e) {
+                        eprintln!("Caused by: {src}");
+                    }
+                }
+            }
+            last = Some(state);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn dir_state_hash(directory: &str) -> Result<u64, AppError> {
+    let entries = std::fs::read_dir(directory)
+        .map_err(|e| AppError::ReadDir { path: directory.to_string(), source: e })?;
+    let mut hasher = DefaultHasher::new();
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let _path = entry.path();
+        let file_name = entry.file_name();
+        let Ok(name_str) = file_name.into_string() else { continue };
+        if !name_str.ends_with(".svg") { continue }
+        name_str.hash(&mut hasher);
+        if let Ok(md) = entry.metadata() {
+            md.len().hash(&mut hasher);
+            if let Ok(modified) = md.modified() {
+                hash_time(&modified, &mut hasher);
+            }
+        }
+    }
+    Ok(hasher.finish())
+}
+
+fn hash_time(t: &SystemTime, hasher: &mut DefaultHasher) {
+    if let Ok(dur) = t.duration_since(UNIX_EPOCH) {
+        dur.as_secs().hash(hasher);
+        dur.subsec_nanos().hash(hasher);
+    }
+}
 /// Loads all the svg files in the directory
 fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
     let entries = std::fs::read_dir(directory).map_err(|e| AppError::ReadDir {

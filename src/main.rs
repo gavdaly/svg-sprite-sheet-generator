@@ -16,7 +16,7 @@ fn main() {
     let result: Result<(), AppError> = match command {
         None => svg::process(&directory, &file),
         Some(Commands::Build) => svg::process(&directory, &file),
-        Some(Commands::Watch) => Err(AppError::Unimplemented("watch subcommand")),
+        Some(Commands::Watch) => svg::watch(&directory, &file),
     };
 
     match result {
