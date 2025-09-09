@@ -545,6 +545,7 @@ mod tests {
     use super::*;
     use std::{fs, path::PathBuf};
     use winnow::Parser;
+    use proptest::prelude::*;
 
     // Simple temp dir guard to keep tests isolated
     struct TempDir(PathBuf);
@@ -861,6 +862,184 @@ mod tests {
         match err {
             AppError::InvalidViewBox { .. } => {}
             other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    // Property: sanitize_id outputs only allowed chars, trims dashes, removes duplicates,
+    // and is idempotent. It may return empty if no valid start char exists.
+    proptest! {
+        #[test]
+        fn prop_sanitize_id_valid_and_idempotent(input in ".*") {
+            let out = sanitize_id(&input);
+            if !out.is_empty() {
+                let mut chars = out.chars();
+                let first = chars.next().unwrap();
+                prop_assert!(is_valid_id_start(first));
+                prop_assert!(!out.starts_with('-'));
+                prop_assert!(!out.ends_with('-'));
+                prop_assert!(!out.contains("--"));
+                prop_assert!(out.chars().skip(1).all(is_valid_id_continue));
+                prop_assert!(out.chars().all(|c| !c.is_whitespace()));
+                prop_assert_eq!(sanitize_id(&out), out);
+            }
+        }
+    }
+
+    // Property: normalize_length accepts positive numbers (with optional px and whitespace),
+    // returns a canonical representation that is idempotent and parsable > 0.
+    proptest! {
+        #[test]
+        fn prop_normalize_length_positive_idempotent(
+            n in 0.0000001f64..1.0e12f64,
+            suffix_px in proptest::bool::ANY,
+            pad_left in 0usize..3,
+            pad_right in 0usize..3
+        ) {
+            // Avoid pathological float strings by formatting via to_string
+            let mut s = n.to_string();
+            if suffix_px { s.push_str("px"); }
+            let input = format!("{left}{s}{right}", left = " ".repeat(pad_left), right = " ".repeat(pad_right));
+            let out = normalize_length(&input).expect("should accept positive length");
+            // out must parse and be > 0
+            let parsed: f64 = out.parse().expect("normalized parses");
+            prop_assert!(parsed.is_finite() && parsed > 0.0);
+            // idempotent
+            prop_assert_eq!(normalize_length(&out), Some(out.clone()));
+        }
+    }
+
+    // Property: normalize_length rejects non-positive values and non-finite
+    proptest! {
+        #[test]
+        fn prop_normalize_length_rejects_non_positive(n in -1.0e6f64..=0.0f64) {
+            // Exclude NaN/inf via range; still guard just in case
+            prop_assume!(n.is_finite());
+            let input = n.to_string();
+            prop_assert!(normalize_length(&input).is_none());
+            let input_px = format!("{input}px");
+            prop_assert!(normalize_length(&input_px).is_none());
+        }
+    }
+
+    // Strategy to format numbers with optional comma/space separators
+    fn fmt_viewbox(min_x: f64, min_y: f64, width: f64, height: f64, use_commas: bool, extra_ws: bool) -> String {
+        let sep = if use_commas { "," } else { " " };
+        let mut s = format!("{}{}{}{}{}{}{}",
+            min_x, sep,
+            if extra_ws { " " } else { "" }, min_y, sep,
+            if extra_ws { "  " } else { "" }, width);
+        if use_commas && extra_ws { s.push(' '); }
+        s.push_str(sep);
+        if !use_commas && extra_ws { s.push_str("   "); }
+        s.push_str(&height.to_string());
+        s
+    }
+
+    // Property: normalize_viewbox accepts 4-tuple with width/height > 0,
+    // emits single-space-separated canonical string without commas and is idempotent.
+    proptest! {
+        #[test]
+        fn prop_normalize_viewbox_idempotent(
+            min_x in -1.0e6f64..1.0e6f64,
+            min_y in -1.0e6f64..1.0e6f64,
+            width in 0.000001f64..1.0e6f64,
+            height in 0.000001f64..1.0e6f64,
+            use_commas in proptest::bool::ANY,
+            extra_ws in proptest::bool::ANY
+        ) {
+            prop_assume!(min_x.is_finite() && min_y.is_finite() && width.is_finite() && height.is_finite());
+            let raw = fmt_viewbox(min_x, min_y, width, height, use_commas, extra_ws);
+            let out = normalize_viewbox(&raw).expect("should normalize valid viewBox");
+            // No commas, single-space separated 4 parts
+            prop_assert!(!out.contains(','));
+            let parts: Vec<&str> = out.split(' ').collect();
+            prop_assert_eq!(parts.len(), 4);
+            // Parse back and compare roughly
+            let rx: f64 = parts[0].parse().unwrap();
+            let ry: f64 = parts[1].parse().unwrap();
+            let rw: f64 = parts[2].parse().unwrap();
+            let rh: f64 = parts[3].parse().unwrap();
+            prop_assert!((rx - min_x).abs() <= 1e-9 || (min_x.is_sign_negative() == rx.is_sign_negative()));
+            prop_assert!((ry - min_y).abs() <= 1e-9 || (min_y.is_sign_negative() == ry.is_sign_negative()));
+            prop_assert!(rw > 0.0 && rh > 0.0);
+            // idempotent
+            prop_assert_eq!(normalize_viewbox(&out), Some(out.clone()));
+        }
+    }
+
+    // Property: invalid width/height in viewBox are rejected
+    proptest! {
+        #[test]
+        fn prop_normalize_viewbox_rejects_bad_dims(width in -1.0e6f64..=0.0f64, height in -1.0e6f64..=0.0f64) {
+            let raw = format!("0 0 {} {}", width, height);
+            prop_assert!(normalize_viewbox(&raw).is_none());
+        }
+    }
+
+    // Generate a valid id for use in other props
+    fn arb_valid_id() -> impl Strategy<Value = String> {
+        let alpha_lower = (b'a'..=b'z').prop_map(|b| b as char);
+        let alpha_upper = (b'A'..=b'Z').prop_map(|b| b as char);
+        let digit = (b'0'..=b'9').prop_map(|b| b as char);
+        let start = prop_oneof![Just('_'), alpha_lower.clone(), alpha_upper.clone()];
+        let cont_char = prop_oneof![alpha_lower, alpha_upper, digit, Just('.'), Just('_'), Just('-')];
+        (start, proptest::collection::vec(cont_char, 0..12)).prop_map(|(s, v)| {
+            let mut id = String::new();
+            id.push(s);
+            for c in v { id.push(c); }
+            // Ensure no consecutive dashes to align with sanitize_id invariants where needed
+            while id.contains("--") { id = id.replace("--", "-"); }
+            id
+        })
+    }
+
+    // Property: extract_ids captures only explicit id attributes, not data-id or other suffixes/prefixes.
+    proptest! {
+        #[test]
+        fn prop_extract_ids_matches_inserted(ids in proptest::collection::vec(arb_valid_id(), 0..6)) {
+            use std::collections::BTreeSet;
+            // Build an svg-like content including both id and decoy attributes
+            let mut content = String::from("<svg>");
+            for (i, id) in ids.iter().enumerate() {
+                let tag = if i % 2 == 0 { "g" } else { "path" };
+                // include decoys around
+                content.push_str(&format!("<{} data-id=\"not{}\" id='{}' data_id=\"x\"/>", tag, id, id));
+                content.push_str(&format!("<use data-id=\"{}\" />", id));
+            }
+            content.push_str("</svg>");
+            let extracted = extract_ids(&content);
+            let got: BTreeSet<_> = extracted.into_iter().collect();
+            let want: BTreeSet<_> = ids.into_iter().collect();
+            prop_assert_eq!(got, want);
+        }
+    }
+
+    // Property: preprocess_svg_content removes BOM, xml prolog, and leading comments before <svg>
+    proptest! {
+        #[test]
+        fn prop_preprocess_svg_preamble_stripped(
+            n_comments in 0usize..3,
+            include_bom in proptest::bool::ANY,
+            include_prolog in proptest::bool::ANY
+        ) {
+            let mut s = String::new();
+            if include_bom { s.push('\u{feff}'); }
+            if include_prolog { s.push_str("<?xml version=\"1.0\"?>"); }
+            for i in 0..n_comments { s.push_str(&format!("<!-- c{} -->", i)); }
+            s.push_str("<svg width=\"1\"></svg>");
+            let pre = preprocess_svg_content(&s);
+            prop_assert!(pre.starts_with("<svg"));
+        }
+    }
+
+    // Property: references_id detects specific references and does not trigger on other ids
+    proptest! {
+        #[test]
+        fn prop_references_id_detects(needle in arb_valid_id(), other in arb_valid_id()) {
+            prop_assume!(needle != other);
+            let content = format!("<use href=\"#{}\"/><use xlink:href=\"#{}\"/><rect fill=\"url(#{})\"/>", needle, needle, needle);
+            prop_assert!(references_id(&content, &needle));
+            prop_assert!(!references_id(&content, &other));
         }
     }
 }

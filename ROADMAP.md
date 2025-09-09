@@ -34,9 +34,9 @@
 
 ## Testing
 
-- [ ] Integration tests with `assert_cmd` + `predicates` covering CLI behaviors.
+- [x] Integration tests with `assert_cmd` + `predicates` covering CLI behaviors.
 - [ ] Snapshot tests of output sprite with `insta`.
-- [ ] Property tests for attribute parser with `proptest`.
+- [x] Property tests for attribute parser with `proptest`.
 - [ ] Fuzzing harness via `cargo-fuzz` targeting parsing.
 
 ## Packaging & Release
