@@ -38,6 +38,17 @@ pub enum AppError {
         path: String,
         original: String,
     },
+    /// width/height attribute has an invalid or unsupported value
+    InvalidDimension {
+        path: String,
+        attr: String,
+        value: String,
+    },
+    /// viewBox attribute is malformed or has non-positive dimensions
+    InvalidViewBox {
+        path: String,
+        value: String,
+    },
 }
 
 impl fmt::Display for AppError {
@@ -61,6 +72,14 @@ impl fmt::Display for AppError {
             AppError::InvalidIdAfterSanitize { path, original } => write!(
                 f,
                 "id '{original}' in {path} is empty after sanitization"
+            ),
+            AppError::InvalidDimension { path, attr, value } => write!(
+                f,
+                "invalid {attr}='{value}' in {path}; expected positive number (optionally 'px')"
+            ),
+            AppError::InvalidViewBox { path, value } => write!(
+                f,
+                "invalid viewBox='{value}' in {path}; expected four numbers with positive width/height"
             ),
         }
     }

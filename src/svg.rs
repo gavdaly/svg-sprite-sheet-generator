@@ -139,15 +139,39 @@ fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
             path: path.display().to_string(),
             source: e,
         })?;
-        let mut s = content.as_str();
+        let pre = preprocess_svg_content(&content);
+        let mut s = pre.as_str();
         match parse_svg.parse_next(&mut s) {
             Ok((attributes, children)) => {
                 // Convert attributes and handle root <svg id> policy: move id -> data-id after sanitization
                 let mut out_attrs: Vec<(String, String)> = Vec::new();
                 let mut root_id_raw: Option<&str> = None;
+                let mut pending_viewbox: Option<String> = None;
                 for (k, v) in &attributes {
                     if *k == "id" {
                         root_id_raw = Some(v);
+                    } else if *k == "width" || *k == "height" {
+                        // Validate and normalize positive numeric width/height, allow optional 'px'
+                        match normalize_length(v) {
+                            Some(nv) => out_attrs.push(((*k).to_string(), nv)),
+                            None => {
+                                return Err(AppError::InvalidDimension {
+                                    path: path.display().to_string(),
+                                    attr: (*k).to_string(),
+                                    value: (*v).to_string(),
+                                })
+                            }
+                        }
+                    } else if *k == "viewBox" {
+                        match normalize_viewbox(v) {
+                            Some(vb) => pending_viewbox = Some(vb),
+                            None => {
+                                return Err(AppError::InvalidViewBox {
+                                    path: path.display().to_string(),
+                                    value: (*v).to_string(),
+                                })
+                            }
+                        }
                     } else {
                         out_attrs.push(((*k).to_string(), (*v).to_string()));
                     }
@@ -169,6 +193,10 @@ fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
                         });
                     }
                     out_attrs.push(("data-id".to_string(), sanitized));
+                }
+
+                if let Some(vb) = pending_viewbox {
+                    out_attrs.push(("viewBox".to_string(), vb));
                 }
 
                 // Scan children for element ids and detect collisions across files
@@ -209,6 +237,31 @@ fn write_sprite(sprite: &str, file: &str) -> Result<(), AppError> {
         path: file.to_string(),
         source: e,
     })
+}
+
+// Strip BOM, leading XML prolog, and comments before the root <svg> tag
+fn preprocess_svg_content(input: &str) -> String {
+    let mut s = input.trim_start_matches('\u{feff}');
+    // Iteratively skip whitespace + XML declarations or comments before <svg
+    loop {
+        let trimmed = s.trim_start();
+        if trimmed.starts_with("<?") {
+            // Skip until '?>'
+            if let Some(end) = trimmed.find("?>") {
+                s = &trimmed[end + 2..];
+                continue;
+            }
+        } else if trimmed.starts_with("<!--") {
+            if let Some(end) = trimmed.find("-->") {
+                s = &trimmed[end + 3..];
+                continue;
+            }
+        }
+        // If we see neither, stop
+        s = trimmed;
+        break;
+    }
+    s.to_string()
 }
 
 // Sanitize an id by dropping leading invalid chars and replacing internal
@@ -321,6 +374,59 @@ fn extract_ids(s: &str) -> Vec<String> {
 
 fn is_name_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == ':'
+}
+
+// Parse and normalize positive length values for width/height.
+// Accepts unitless or 'px' suffix. Returns normalized string (e.g., "24").
+fn normalize_length(v: &str) -> Option<String> {
+    let t = v.trim();
+    let num = if let Some(stripped) = t.strip_suffix("px") {
+        stripped.trim()
+    } else {
+        t
+    };
+    // Reject percentages or other units
+    if num.ends_with('%') || num.ends_with("em") || num.ends_with("rem") {
+        return None;
+    }
+    let val: f64 = num.parse().ok()?;
+    if !(val.is_finite() && val > 0.0) {
+        return None;
+    }
+    Some(normalize_number(val))
+}
+
+fn normalize_number(n: f64) -> String {
+    if (n.fract()).abs() < f64::EPSILON {
+        format!("{:.0}", n)
+    } else {
+        // Default formatter gives a concise representation
+        format!("{}", n)
+    }
+}
+
+// Normalize viewBox into four numbers separated by single spaces.
+// Accept commas and/or whitespace as separators. Require width/height > 0.
+fn normalize_viewbox(v: &str) -> Option<String> {
+    let replaced = v.replace(',', " ");
+    let parts: Vec<&str> = replaced.split_whitespace().collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let min_x: f64 = parts[0].parse().ok()?;
+    let min_y: f64 = parts[1].parse().ok()?;
+    let width: f64 = parts[2].parse().ok()?;
+    let height: f64 = parts[3].parse().ok()?;
+    if !(width.is_finite() && width > 0.0 && height.is_finite() && height > 0.0) {
+        return None;
+    }
+    Some(format!(
+        "{} {} {} {}",
+        normalize_number(min_x),
+        normalize_number(min_y),
+        normalize_number(width),
+        normalize_number(height)
+    ))
 }
 
 /// Transfrom a group of svgs into a single svg as a string
@@ -678,6 +784,82 @@ mod tests {
         let err = process(dir.to_str().unwrap(), out.to_str().unwrap()).expect_err("should err");
         match err {
             AppError::IdCollision { id, .. } => assert_eq!(id, "dup"),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn handles_bom_xml_prolog_and_leading_comment() {
+        let tmp = TempDir::new("svg_preamble");
+        let dir = tmp.path();
+        let content = format!(
+            "{}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- comment -->\n<svg width=\"10\" height=\"10\"><rect/></svg>",
+            '\u{feff}'
+        );
+        fs::write(dir.join("p.svg"), content).unwrap();
+        let out = dir.join("sprite.svg");
+        process(dir.to_str().unwrap(), out.to_str().unwrap()).expect("build ok");
+        let sprite = fs::read_to_string(&out).unwrap();
+        assert!(sprite.contains("pattern id=\"p\""));
+    }
+
+    #[test]
+    fn normalizes_width_height_values() {
+        let tmp = TempDir::new("svg_dims_norm");
+        let dir = tmp.path();
+        fs::write(
+            dir.join("s.svg"),
+            "<svg width=\"24px\" height=\"24.0\"><g/></svg>",
+        )
+        .unwrap();
+        let out = dir.join("sprite.svg");
+        process(dir.to_str().unwrap(), out.to_str().unwrap()).expect("build ok");
+        let sprite = fs::read_to_string(&out).unwrap();
+        assert!(sprite.contains("width=\"24\""));
+        assert!(sprite.contains("height=\"24\""));
+    }
+
+    #[test]
+    fn rejects_invalid_dimension_values() {
+        let tmp = TempDir::new("svg_dims_reject");
+        let dir = tmp.path();
+        fs::write(dir.join("s.svg"), "<svg width=\"0\" height=\"1\"></svg>").unwrap();
+        let out = dir.join("sprite.svg");
+        let err = process(dir.to_str().unwrap(), out.to_str().unwrap()).expect_err("should err");
+        match err {
+            AppError::InvalidDimension { attr, .. } => assert_eq!(attr, "width"),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn normalizes_viewbox() {
+        let tmp = TempDir::new("svg_viewbox_norm");
+        let dir = tmp.path();
+        fs::write(
+            dir.join("v.svg"),
+            "<svg viewBox=\"0,0,24,24\" width=\"1\"><g/></svg>",
+        )
+        .unwrap();
+        let out = dir.join("sprite.svg");
+        process(dir.to_str().unwrap(), out.to_str().unwrap()).expect("build ok");
+        let sprite = fs::read_to_string(&out).unwrap();
+        assert!(sprite.contains("viewBox=\"0 0 24 24\""));
+    }
+
+    #[test]
+    fn rejects_invalid_viewbox_dims() {
+        let tmp = TempDir::new("svg_viewbox_reject");
+        let dir = tmp.path();
+        fs::write(
+            dir.join("v.svg"),
+            "<svg viewBox=\"0 0 0 24\"><g/></svg>",
+        )
+        .unwrap();
+        let out = dir.join("sprite.svg");
+        let err = process(dir.to_str().unwrap(), out.to_str().unwrap()).expect_err("should err");
+        match err {
+            AppError::InvalidViewBox { .. } => {}
             other => panic!("unexpected error: {other}"),
         }
     }
