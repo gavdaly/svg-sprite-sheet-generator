@@ -62,6 +62,10 @@ impl SvgSprite {
 /// Parse input svgs and stream-write the sprite to the output file to minimize memory usage.
 pub fn process_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppError> {
     // Collect candidate SVG file entries first to detect empty inputs without creating output.
+    let out_basename = std::path::Path::new(file)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string());
     let entries: Vec<std::path::PathBuf> = std::fs::read_dir(directory)
         .map_err(|e| AppError::ReadDir {
             path: directory.to_string(),
@@ -69,6 +73,12 @@ pub fn process_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(
         })?
         .filter_map(|e| e.ok().map(|de| de.path()))
         .filter(|p| p.extension().is_some_and(|ext| ext == "svg"))
+        .filter(|p| {
+            if let Some(ref base) = out_basename {
+                return p.file_name().and_then(|s| s.to_str()) != Some(base.as_str());
+            }
+            true
+        })
         .collect();
 
     if entries.is_empty() {
@@ -97,9 +107,7 @@ pub fn process_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(
             source: e,
         })?;
 
-    // Global registry of ids to detect duplicates across all inputs
-    let mut id_registry: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    // Warning counter for this run
     let mut warn_count: usize = 0;
 
     for path in entries {
@@ -190,18 +198,8 @@ pub fn process_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(
             out_attrs.push(("viewBox".to_string(), vb));
         }
 
-        // Scan children for element ids and detect collisions across files
-        for cid in ids::extract_ids(children) {
-            if let Some(first) = id_registry.get(&cid) {
-                return Err(AppError::IdCollision {
-                    id: cid,
-                    first_path: first.clone(),
-                    second_path: path.display().to_string(),
-                });
-            } else {
-                id_registry.insert(cid, path.display().to_string());
-            }
-        }
+        // Rewrite internal ids -> data-id and ensure no per-file duplicates
+        let (rewritten_children, _data_ids) = ids::rewrite_ids_to_data_ids(children);
 
         // Warnings for missing dims/viewBox
         if !saw_width {
@@ -217,18 +215,13 @@ pub fn process_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(
             tracing::warn!(path = %path.display(), file = %file_name, "Missing viewBox on root <svg>");
         }
 
-        // Stream write one pattern element
+        let attrs = out_attrs
+            .iter()
+            .map(|(k, v)| format!(r#" {k}="{v}""#))
+            .collect::<String>();
+        let pattern = format!(r#"<pattern id="{name}"{attrs}>{rewritten_children}</pattern>"#);
         writer
-            .write_all(
-                format!(
-                    r#"<pattern id="{name}"{}>{children}</pattern>"#,
-                    out_attrs
-                        .iter()
-                        .map(|(k, v)| format!(r#" {k}="{v}""#))
-                        .collect::<String>()
-                )
-                .as_bytes(),
-            )
+            .write_all(pattern.as_bytes())
             .map_err(|e| AppError::WriteFile {
                 path: file.to_string(),
                 source: e,
@@ -347,7 +340,10 @@ pub fn watch_poll(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppE
             continue;
         }
 
-        // Collect current svg files
+        let out_basename = std::path::Path::new(file)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string());
         let paths: Vec<std::path::PathBuf> = std::fs::read_dir(directory)
             .map_err(|e| AppError::ReadDir {
                 path: directory.to_string(),
@@ -355,6 +351,12 @@ pub fn watch_poll(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppE
             })?
             .filter_map(|e| e.ok().map(|de| de.path()))
             .filter(|p| p.extension().is_some_and(|ext| ext == "svg"))
+            .filter(|p| {
+                if let Some(ref base) = out_basename {
+                    return p.file_name().and_then(|s| s.to_str()) != Some(base.as_str());
+                }
+                true
+            })
             .collect();
 
         if paths.is_empty() {
@@ -363,7 +365,6 @@ pub fn watch_poll(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppE
             continue;
         }
 
-        // Remove deleted entries
         let live: std::collections::HashSet<_> =
             paths.iter().map(|p| p.display().to_string()).collect();
         cache.retain(|k, _| live.contains(k));
@@ -397,29 +398,6 @@ pub fn watch_poll(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppE
                     }
                 }
             }
-        }
-
-        // Check global id collisions
-        let mut id_reg: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        let mut collision = None;
-        for entry in cache.values() {
-            for cid in &entry.child_ids {
-                if let Some(first) = id_reg.get(cid) {
-                    collision = Some((cid.clone(), first.clone(), entry.path_str.clone()));
-                    break;
-                } else {
-                    id_reg.insert(cid.clone(), entry.path_str.clone());
-                }
-            }
-            if collision.is_some() {
-                break;
-            }
-        }
-        if let Some((id, first, second)) = collision {
-            tracing::error!(%id, first = %first, second = %second, "ID collision detected");
-            std::thread::sleep(Duration::from_millis(500));
-            continue;
         }
 
         // Write sprite from cache in sorted order
@@ -469,11 +447,7 @@ fn hash_time(t: &SystemTime, hasher: &mut DefaultHasher) {
         dur.subsec_nanos().hash(hasher);
     }
 }
-// removed: load_svgs; streaming write avoids building all SVGs in memory
 
-// Write the sprite to a file
-// removed: write_sprite; streaming write is handled in process
-//
 // Strip BOM, leading XML prolog, and comments before the root <svg> tag
 fn preprocess_svg_content(input: &str) -> String {
     let mut s = input.trim_start_matches('\u{feff}');
@@ -670,9 +644,8 @@ fn build_cache_entry(path: &std::path::Path) -> Result<CacheEntry, AppError> {
         out_attrs.push(("viewBox".to_string(), vb));
     }
 
-    let child_ids = ids::extract_ids(children);
+    let (rewritten_children, data_ids) = ids::rewrite_ids_to_data_ids(children);
 
-    // Warnings for missing dims/viewBox
     if !saw_width {
         warnings += 1;
     }
@@ -688,8 +661,8 @@ fn build_cache_entry(path: &std::path::Path) -> Result<CacheEntry, AppError> {
         len: 0,
         name,
         out_attrs,
-        children: children.to_string(),
-        child_ids,
+        children: rewritten_children,
+        child_ids: data_ids,
         path_str: path.display().to_string(),
         warnings,
     })
@@ -913,22 +886,21 @@ mod tests {
     }
 
     #[test]
-    fn id_collision_across_files_errors() {
-        let tmp = TempDir::new("id_collision");
+    fn ids_rewritten_to_data_ids_and_no_cross_file_collision() {
+        let tmp = TempDir::new("id_rewrite");
         let dir = tmp.path();
         fs::write(dir.join("a.svg"), "<svg width='1'><g id=\"dup\"/></svg>").unwrap();
         fs::write(dir.join("b.svg"), "<svg width='1'><g id=\"dup\"/></svg>").unwrap();
         let out = dir.join("sprite.svg");
-        let err = process_with_opts(
+        process_with_opts(
             dir.to_str().unwrap(),
             out.to_str().unwrap(),
             RunOpts::default(),
         )
-        .expect_err("should err");
-        match err {
-            AppError::IdCollision { id, .. } => assert_eq!(id, "dup"),
-            other => panic!("unexpected error: {other}"),
-        }
+        .expect("should build ok, no cross-file id collision");
+        let sprite = fs::read_to_string(&out).unwrap();
+        assert!(sprite.contains("data-id=\"dup\""));
+        assert!(!sprite.contains(" id=\"dup\""));
     }
 
     #[test]

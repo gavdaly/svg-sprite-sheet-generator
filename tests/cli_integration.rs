@@ -74,12 +74,18 @@ fn end_to_end_sprite_generation_and_validations() {
             !sprite.contains(" id=\"RootA\""),
             "root id should not be preserved"
         );
-        // Children ids preserved and referenceable
-        assert!(sprite.contains("id=\"icon-a\""), "missing child id icon-a");
-        assert!(sprite.contains("id=\"icon-b\""), "missing child id icon-b");
-        // Nested <svg> width/height should remain with px, proving we didn't normalize nested elements
         assert!(
-            sprite.contains("<svg id=\"nested\" width=\"2px\" height=\"2px\">"),
+            sprite.contains("data-id=\"icon-a\""),
+            "missing child data-id icon-a"
+        );
+        assert!(
+            sprite.contains("data-id=\"icon-b\""),
+            "missing child data-id icon-b"
+        );
+        assert!(!sprite.contains(" id=\"icon-a\""));
+        assert!(!sprite.contains(" id=\"icon-b\""));
+        assert!(
+            sprite.contains("<svg data-id=\"nested\" width=\"2px\" height=\"2px\">"),
             "nested svg attributes should remain untouched"
         );
     }
@@ -100,9 +106,7 @@ fn end_to_end_sprite_generation_and_validations() {
             out_path.to_str().unwrap(),
             "build",
         ]);
-        cmd.assert()
-            .failure()
-            .stderr(predicate::str::contains("duplicate id"));
+        cmd.assert().success();
     }
 
     // Replace c.svg with a root id that is referenced internally (should fail)

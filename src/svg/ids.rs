@@ -9,18 +9,30 @@ pub(crate) fn references_id(content: &str, id: &str) -> bool {
         || content.contains(&format!("url(#{id})"))
 }
 
-// Extract all id attribute values from a chunk of SVG/XML text.
-// This is a lightweight scan that matches id="..." and id='...'
-// and avoids matching names like data-id by checking the preceding char.
-pub(crate) fn extract_ids(s: &str) -> Vec<String> {
-    let mut ids = Vec::new();
+
+fn is_name_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == ':'
+}
+
+// Rewrite all internal id attributes to data-id attributes.
+// Ensures there are no duplicate data-id values within the same content by
+// appending a numeric suffix (-2, -3, ...) to subsequent duplicates.
+// Returns the rewritten content and the list of resulting data-id values.
+pub(crate) fn rewrite_ids_to_data_ids(s: &str) -> (String, Vec<String>) {
     let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut data_ids = Vec::new();
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut i = 0usize;
     while i < bytes.len() {
+        // Match id="..." or id='...'
         if i + 4 <= bytes.len() && &bytes[i..i + 3] == b"id=" {
+            // Ensure it's a standalone id attribute (not data-id)
             let prev = i.checked_sub(1).and_then(|j| bytes.get(j)).copied();
             if let Some(p) = prev {
                 if is_name_char(p as char) {
+                    // Part of a larger name, copy one byte and continue
+                    out.push(bytes[i] as char);
                     i += 1;
                     continue;
                 }
@@ -32,28 +44,52 @@ pub(crate) fn extract_ids(s: &str) -> Vec<String> {
                     let mut j = start;
                     while j < bytes.len() {
                         if bytes[j] as char == quote {
-                            if let Ok(val) = std::str::from_utf8(&bytes[start..j]) {
-                                ids.push(val.to_string());
+                            // Extract value
+                            if let Ok(val) = std::str::from_utf8(&bytes[start..j]).map(|v| v.to_string()) {
+                                // Sanitize and disambiguate
+                                let mut sanitized = crate::svg::sanitize::sanitize_id(&val);
+                                if sanitized.is_empty() {
+                                    // Fall back to original if sanitation removes all; keep stable
+                                    sanitized = "x".into();
+                                }
+                                let entry = seen.entry(sanitized.clone()).or_insert(0);
+                                *entry += 1;
+                                let final_id = if *entry == 1 {
+                                    sanitized
+                                } else {
+                                    format!("{}-{}", sanitized, *entry)
+                                };
+                                data_ids.push(final_id.clone());
+                                // Write rewritten attribute
+                                out.push_str("data-id=");
+                                out.push(quote);
+                                out.push_str(&final_id);
+                                out.push(quote);
+                                i = j + 1;
+                                break;
+                            } else {
+                                // If invalid utf-8 segment, just copy raw and continue
+                                out.push(bytes[i] as char);
+                                i += 1;
+                                break;
                             }
-                            i = j + 1;
-                            break;
                         }
                         j += 1;
                     }
                     if j >= bytes.len() {
+                        // Unclosed attribute; copy remainder and break
+                        out.push_str(&s[i..]);
                         break;
                     }
                     continue;
                 }
             }
         }
+        // Default copy
+        out.push(bytes[i] as char);
         i += 1;
     }
-    ids
-}
-
-fn is_name_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == ':'
+    (out, data_ids)
 }
 
 #[cfg(test)]
@@ -88,23 +124,7 @@ mod tests {
         })
     }
 
-    proptest! {
-        #[test]
-        fn prop_extract_ids_matches_inserted(ids in proptest::collection::vec(arb_valid_id(), 0..6)) {
-            use std::collections::BTreeSet;
-            let mut content = String::from("<svg>");
-            for (i, id) in ids.iter().enumerate() {
-                let tag = if i % 2 == 0 { "g" } else { "path" };
-                content.push_str(&format!("<{tag} data-id=\"not{id}\" id='{id}' data_id=\"x\"/>"));
-                content.push_str(&format!("<use data-id=\"{id}\" />"));
-            }
-            content.push_str("</svg>");
-            let extracted = extract_ids(&content);
-            let got: BTreeSet<_> = extracted.into_iter().collect();
-            let want: BTreeSet<_> = ids.into_iter().collect();
-            prop_assert_eq!(got, want);
-        }
-    }
+    // No property tests for extract_ids since internal ids are rewritten
 
     proptest! {
         #[test]
@@ -114,5 +134,17 @@ mod tests {
             prop_assert!(references_id(&content, &needle));
             prop_assert!(!references_id(&content, &other));
         }
+    }
+
+    #[test]
+    fn rewrite_ids_simple() {
+        let input = "<g id=\"a\"/><g id='a'/><g id=\"b\"/>";
+        let (out, ids) = rewrite_ids_to_data_ids(input);
+        assert!(out.contains("data-id=\"a\""));
+        assert!(out.contains("data-id='a-2'"));
+        assert!(out.contains("data-id=\"b\""));
+        assert_eq!(ids, vec!["a".to_string(), "a-2".to_string(), "b".to_string()]);
+        assert!(!out.contains(" id=\""));
+        assert!(!out.contains(" id='"));
     }
 }
