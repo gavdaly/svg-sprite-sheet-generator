@@ -61,7 +61,11 @@ impl fmt::Display for AppError {
                 write!(f, "failed to parse svg ({path}): {message}")
             }
             AppError::NoSvgFiles { path } => write!(f, "no SVG files found in directory: {path}"),
-            AppError::IdCollision { id, first_path, second_path } => write!(
+            AppError::IdCollision {
+                id,
+                first_path,
+                second_path,
+            } => write!(
                 f,
                 "duplicate id '{id}' found in {second_path}; already defined in {first_path}"
             ),
@@ -69,10 +73,9 @@ impl fmt::Display for AppError {
                 f,
                 "root <svg> id '{id}' in {path} is referenced inside the document; root ids are moved to data-id"
             ),
-            AppError::InvalidIdAfterSanitize { path, original } => write!(
-                f,
-                "id '{original}' in {path} is empty after sanitization"
-            ),
+            AppError::InvalidIdAfterSanitize { path, original } => {
+                write!(f, "id '{original}' in {path} is empty after sanitization")
+            }
             AppError::InvalidDimension { path, attr, value } => write!(
                 f,
                 "invalid {attr}='{value}' in {path}; expected positive number (optionally 'px')"

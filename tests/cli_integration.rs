@@ -1,5 +1,3 @@
-use assert_cmd::cargo::CommandCargoExt;
-use assert_cmd::prelude::*;
 use assert_fs::prelude::*;
 use predicates::prelude::*;
 use std::fs;
@@ -51,15 +49,27 @@ fn end_to_end_sprite_generation_and_validations() {
         // Validate output sprite
         let sprite = fs::read_to_string(&out_path).expect("read sprite");
         // a.svg becomes pattern id="a" with normalized attributes
-        assert!(sprite.contains("<pattern id=\"a\""), "missing pattern for a");
-        assert!(sprite.contains("width=\"24\""), "width not normalized to 24");
-        assert!(sprite.contains("height=\"24\""), "height not normalized to 24");
+        assert!(
+            sprite.contains("<pattern id=\"a\""),
+            "missing pattern for a"
+        );
+        assert!(
+            sprite.contains("width=\"24\""),
+            "width not normalized to 24"
+        );
+        assert!(
+            sprite.contains("height=\"24\""),
+            "height not normalized to 24"
+        );
         assert!(
             sprite.contains("viewBox=\"0 0 24 24\""),
             "viewBox not normalized to spaces"
         );
         // Root id moved to data-id; original id not present on output
-        assert!(sprite.contains("data-id=\"RootA\""), "missing data-id=RootA");
+        assert!(
+            sprite.contains("data-id=\"RootA\""),
+            "missing data-id=RootA"
+        );
         assert!(
             !sprite.contains(" id=\"RootA\""),
             "root id should not be preserved"

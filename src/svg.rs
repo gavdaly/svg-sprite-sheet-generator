@@ -1,5 +1,5 @@
 use crate::error::AppError;
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use winnow::{
@@ -20,6 +20,7 @@ struct SvgSprite {
 }
 
 impl SvgSprite {
+    #[cfg(test)]
     pub fn new(name: String, attributes: Vec<(&str, &str)>, children: String) -> Self {
         let attributes = attributes
             .iter()
@@ -159,7 +160,7 @@ fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
                                     path: path.display().to_string(),
                                     attr: (*k).to_string(),
                                     value: (*v).to_string(),
-                                })
+                                });
                             }
                         }
                     } else if *k == "viewBox" {
@@ -169,7 +170,7 @@ fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
                                 return Err(AppError::InvalidViewBox {
                                     path: path.display().to_string(),
                                     value: (*v).to_string(),
-                                })
+                                });
                             }
                         }
                     } else {
@@ -279,15 +280,13 @@ fn sanitize_id(raw: &str) -> String {
     }
     // Process the rest
     let mut prev_dash = false;
-    while let Some(ch) = it.next() {
+    for ch in it {
         if is_valid_id_continue(ch) || is_valid_id_start(ch) {
             out.push(ch);
             prev_dash = false;
-        } else {
-            if !prev_dash {
-                out.push('-');
-                prev_dash = true;
-            }
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
         }
     }
     // Trim leading/trailing '-'
@@ -305,15 +304,10 @@ fn sanitize_id(raw: &str) -> String {
 }
 
 fn is_valid_id_start(ch: char) -> bool {
-    (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_'
+    ch == '_' || ch.is_ascii_alphabetic()
 }
 fn is_valid_id_continue(ch: char) -> bool {
-    (ch >= 'A' && ch <= 'Z')
-        || (ch >= 'a' && ch <= 'z')
-        || (ch >= '0' && ch <= '9')
-        || ch == '.'
-        || ch == '_'
-        || ch == '-'
+    ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-'
 }
 
 // Detect simple references to an id within content: href="#id", xlink:href="#id", or url(#id)
@@ -322,7 +316,7 @@ fn references_id(content: &str, id: &str) -> bool {
         || content.contains(&format!("xlink:href=\"#{id}\""))
         || content.contains(&format!("href='#{id}'"))
         || content.contains(&format!("xlink:href='#{id}'"))
-        || content.contains(&format!("url(#{})", format!("#{id}")))
+        || content.contains(&format!("url(#{id})"))
 }
 
 // Extract all id attribute values from a chunk of SVG/XML text.
@@ -398,10 +392,10 @@ fn normalize_length(v: &str) -> Option<String> {
 
 fn normalize_number(n: f64) -> String {
     if (n.fract()).abs() < f64::EPSILON {
-        format!("{:.0}", n)
+        format!("{n:.0}")
     } else {
         // Default formatter gives a concise representation
-        format!("{}", n)
+        format!("{n}")
     }
 }
 
@@ -543,9 +537,9 @@ fn parse_children<'a>(input: &'a mut &'a str) -> PResult<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::{fs, path::PathBuf};
     use winnow::Parser;
-    use proptest::prelude::*;
 
     // Simple temp dir guard to keep tests isolated
     struct TempDir(PathBuf);
@@ -620,10 +614,7 @@ mod tests {
         let input = r##"<svg id="test" fill="#000000">Something</svg>"##;
         match parse_svg.parse(input) {
             Ok((_vec, children)) => assert_eq!(children, "Something"),
-            Err(e) => {
-                dbg!(e);
-                assert!(false)
-            }
+            Err(e) => panic!("parse_svg error: {e:?}"),
         };
     }
 
@@ -852,11 +843,7 @@ mod tests {
     fn rejects_invalid_viewbox_dims() {
         let tmp = TempDir::new("svg_viewbox_reject");
         let dir = tmp.path();
-        fs::write(
-            dir.join("v.svg"),
-            "<svg viewBox=\"0 0 0 24\"><g/></svg>",
-        )
-        .unwrap();
+        fs::write(dir.join("v.svg"), "<svg viewBox=\"0 0 0 24\"><g/></svg>").unwrap();
         let out = dir.join("sprite.svg");
         let err = process(dir.to_str().unwrap(), out.to_str().unwrap()).expect_err("should err");
         match err {
@@ -922,15 +909,32 @@ mod tests {
     }
 
     // Strategy to format numbers with optional comma/space separators
-    fn fmt_viewbox(min_x: f64, min_y: f64, width: f64, height: f64, use_commas: bool, extra_ws: bool) -> String {
+    fn fmt_viewbox(
+        min_x: f64,
+        min_y: f64,
+        width: f64,
+        height: f64,
+        use_commas: bool,
+        extra_ws: bool,
+    ) -> String {
         let sep = if use_commas { "," } else { " " };
-        let mut s = format!("{}{}{}{}{}{}{}",
-            min_x, sep,
-            if extra_ws { " " } else { "" }, min_y, sep,
-            if extra_ws { "  " } else { "" }, width);
-        if use_commas && extra_ws { s.push(' '); }
+        let mut s = format!(
+            "{}{}{}{}{}{}{}",
+            min_x,
+            sep,
+            if extra_ws { " " } else { "" },
+            min_y,
+            sep,
+            if extra_ws { "  " } else { "" },
+            width
+        );
+        if use_commas && extra_ws {
+            s.push(' ');
+        }
         s.push_str(sep);
-        if !use_commas && extra_ws { s.push_str("   "); }
+        if !use_commas && extra_ws {
+            s.push_str("   ");
+        }
         s.push_str(&height.to_string());
         s
     }
@@ -971,7 +975,7 @@ mod tests {
     proptest! {
         #[test]
         fn prop_normalize_viewbox_rejects_bad_dims(width in -1.0e6f64..=0.0f64, height in -1.0e6f64..=0.0f64) {
-            let raw = format!("0 0 {} {}", width, height);
+            let raw = format!("0 0 {width} {height}");
             prop_assert!(normalize_viewbox(&raw).is_none());
         }
     }
@@ -982,13 +986,24 @@ mod tests {
         let alpha_upper = (b'A'..=b'Z').prop_map(|b| b as char);
         let digit = (b'0'..=b'9').prop_map(|b| b as char);
         let start = prop_oneof![Just('_'), alpha_lower.clone(), alpha_upper.clone()];
-        let cont_char = prop_oneof![alpha_lower, alpha_upper, digit, Just('.'), Just('_'), Just('-')];
+        let cont_char = prop_oneof![
+            alpha_lower,
+            alpha_upper,
+            digit,
+            Just('.'),
+            Just('_'),
+            Just('-')
+        ];
         (start, proptest::collection::vec(cont_char, 0..12)).prop_map(|(s, v)| {
             let mut id = String::new();
             id.push(s);
-            for c in v { id.push(c); }
+            for c in v {
+                id.push(c);
+            }
             // Ensure no consecutive dashes to align with sanitize_id invariants where needed
-            while id.contains("--") { id = id.replace("--", "-"); }
+            while id.contains("--") {
+                id = id.replace("--", "-");
+            }
             id
         })
     }
@@ -1003,8 +1018,8 @@ mod tests {
             for (i, id) in ids.iter().enumerate() {
                 let tag = if i % 2 == 0 { "g" } else { "path" };
                 // include decoys around
-                content.push_str(&format!("<{} data-id=\"not{}\" id='{}' data_id=\"x\"/>", tag, id, id));
-                content.push_str(&format!("<use data-id=\"{}\" />", id));
+                content.push_str(&format!("<{tag} data-id=\"not{id}\" id='{id}' data_id=\"x\"/>"));
+                content.push_str(&format!("<use data-id=\"{id}\" />"));
             }
             content.push_str("</svg>");
             let extracted = extract_ids(&content);
@@ -1025,7 +1040,7 @@ mod tests {
             let mut s = String::new();
             if include_bom { s.push('\u{feff}'); }
             if include_prolog { s.push_str("<?xml version=\"1.0\"?>"); }
-            for i in 0..n_comments { s.push_str(&format!("<!-- c{} -->", i)); }
+            for i in 0..n_comments { s.push_str(&format!("<!-- c{i} -->")); }
             s.push_str("<svg width=\"1\"></svg>");
             let pre = preprocess_svg_content(&s);
             prop_assert!(pre.starts_with("<svg"));
@@ -1037,7 +1052,7 @@ mod tests {
         #[test]
         fn prop_references_id_detects(needle in arb_valid_id(), other in arb_valid_id()) {
             prop_assume!(needle != other);
-            let content = format!("<use href=\"#{}\"/><use xlink:href=\"#{}\"/><rect fill=\"url(#{})\"/>", needle, needle, needle);
+            let content = format!("<use href=\"#{needle}\"/><use xlink:href=\"#{needle}\"/><rect fill=\"url(#{needle})\"/>");
             prop_assert!(references_id(&content, &needle));
             prop_assert!(!references_id(&content, &other));
         }
