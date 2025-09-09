@@ -10,6 +10,18 @@ mod parsing;
 mod sanitize;
 mod transform;
 
+// Cached representation of a processed SVG used by incremental watch builds
+#[derive(Clone)]
+struct CacheEntry {
+    mtime: SystemTime,
+    len: u64,
+    name: String,
+    out_attrs: Vec<(String, String)>,
+    children: String,
+    child_ids: Vec<String>,
+    path_str: String,
+}
+
 /// A struct to represent a SVG file
 #[cfg_attr(not(test), allow(dead_code))]
 struct SvgSprite {
@@ -39,7 +51,7 @@ impl SvgSprite {
 /// Parse input svgs and stream-write the sprite to the output file to minimize memory usage.
 pub fn process(directory: &str, file: &str) -> Result<(), AppError> {
     // Collect candidate SVG file entries first to detect empty inputs without creating output.
-    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(directory)
+    let entries: Vec<std::path::PathBuf> = std::fs::read_dir(directory)
         .map_err(|e| AppError::ReadDir {
             path: directory.to_string(),
             source: e,
@@ -195,31 +207,84 @@ pub fn process(directory: &str, file: &str) -> Result<(), AppError> {
 /// Watch a directory for changes and rebuild the sprite when inputs change.
 pub fn watch(directory: &str, file: &str) -> Result<(), AppError> {
     println!("Watching '{directory}' -> '{file}' (Ctrl+C to stop)");
-    // Initial build
-    if let Err(e) = process(directory, file) {
-        eprintln!("Initial build failed: {e}");
-        if let Some(src) = std::error::Error::source(&e) {
-            eprintln!("Caused by: {src}");
-        }
-    } else {
-        println!("Initial build completed");
-    }
+    let mut cache: std::collections::HashMap<String, CacheEntry> = std::collections::HashMap::new();
+    let mut last_state: Option<u64> = None;
 
-    let mut last: Option<u64> = None;
     loop {
         let state = dir_state_hash(directory)?;
-        if last.as_ref().is_none_or(|l| *l != state) {
-            match process(directory, file) {
-                Ok(()) => println!("Rebuilt sprite at {:?}", SystemTime::now()),
-                Err(e) => {
-                    eprintln!("Rebuild failed: {e}");
-                    if let Some(src) = std::error::Error::source(&e) {
-                        eprintln!("Caused by: {src}");
+        if last_state.as_ref().is_some_and(|s| *s == state) {
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+
+        // Collect current svg files
+        let paths: Vec<std::path::PathBuf> = std::fs::read_dir(directory)
+            .map_err(|e| AppError::ReadDir { path: directory.to_string(), source: e })?
+            .filter_map(|e| e.ok().map(|de| de.path()))
+            .filter(|p| p.extension().is_some_and(|ext| ext == "svg"))
+            .collect();
+
+        if paths.is_empty() {
+            eprintln!("No svg files found in '{directory}'");
+            last_state = Some(state);
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+
+        // Remove deleted entries
+        let live: std::collections::HashSet<_> = paths.iter().map(|p| p.display().to_string()).collect();
+        cache.retain(|k, _| live.contains(k));
+
+        // Update or add changed files
+        for p in &paths {
+            let meta = match std::fs::metadata(p) { Ok(m)=>m, Err(_)=>continue };
+            let mtime = meta.modified().unwrap_or(UNIX_EPOCH);
+            let len = meta.len();
+            let key = p.display().to_string();
+            let needs = match cache.get(&key) { Some(c)=> c.mtime!=mtime || c.len!=len, None=>true };
+            if needs {
+                match build_cache_entry(p) {
+                    Ok(mut ce) => { ce.mtime = mtime; ce.len = len; ce.path_str = key.clone(); cache.insert(key, ce); }
+                    Err(e) => {
+                        eprintln!("Skip {}: {e}", p.display());
+                        // skip writing this round
+                        last_state = Some(state);
+                        std::thread::sleep(Duration::from_millis(500));
+                        continue;
                     }
                 }
             }
-            last = Some(state);
         }
+
+        // Check global id collisions
+        let mut id_reg: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut collision = None;
+        for entry in cache.values() {
+            for cid in &entry.child_ids {
+                if let Some(first) = id_reg.get(cid) {
+                    collision = Some((cid.clone(), first.clone(), entry.path_str.clone()));
+                    break;
+                } else {
+                    id_reg.insert(cid.clone(), entry.path_str.clone());
+                }
+            }
+            if collision.is_some() { break; }
+        }
+        if let Some((id, first, second)) = collision {
+            eprintln!("ID collision '{id}' between {first} and {second}");
+            last_state = Some(state);
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+
+        // Write sprite from cache in sorted order
+        if let Err(e) = write_sprite_from_cache(file, &cache, &paths) {
+            eprintln!("Write failed: {e}");
+            if let Some(src) = std::error::Error::source(&e) { eprintln!("Caused by: {src}"); }
+        } else {
+            println!("Rebuilt sprite at {:?}", SystemTime::now());
+        }
+        last_state = Some(state);
         std::thread::sleep(Duration::from_millis(500));
     }
 }
@@ -297,6 +362,102 @@ fn preprocess_svg_content(input: &str) -> String {
 // moved: normalize_* functions in svg::normalize
 
 // sprite rendering moved to svg::transform
+
+fn build_cache_entry(path: &std::path::Path) -> Result<CacheEntry, AppError> {
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| AppError::ReadFile { path: path.display().to_string(), source: std::io::Error::new(std::io::ErrorKind::Other, "invalid filename") })?
+        .to_string();
+    let name = file_name.trim_end_matches(".svg").to_string();
+    let content = std::fs::read_to_string(path).map_err(|e| AppError::ReadFile { path: path.display().to_string(), source: e })?;
+    let pre = preprocess_svg_content(&content);
+    let mut s = pre.as_str();
+    let (attributes, children) = parsing::parse_svg
+        .parse_next(&mut s)
+        .map_err(|e| AppError::ParseSvg { path: path.display().to_string(), message: format!("{e:?}") })?;
+
+    let mut out_attrs: Vec<(String, String)> = Vec::new();
+    let mut root_id_raw: Option<&str> = None;
+    let mut pending_viewbox: Option<String> = None;
+    for (k, v) in &attributes {
+        if *k == "id" {
+            root_id_raw = Some(v);
+        } else if *k == "width" || *k == "height" {
+            match normalize::normalize_length(v) {
+                Some(nv) => out_attrs.push(((*k).to_string(), nv)),
+                None => {
+                    return Err(AppError::InvalidDimension { path: path.display().to_string(), attr: (*k).to_string(), value: (*v).to_string() });
+                }
+            }
+        } else if *k == "viewBox" {
+            match normalize::normalize_viewbox(v) {
+                Some(vb) => pending_viewbox = Some(vb),
+                None => {
+                    return Err(AppError::InvalidViewBox { path: path.display().to_string(), value: (*v).to_string() });
+                }
+            }
+        } else {
+            out_attrs.push(((*k).to_string(), (*v).to_string()));
+        }
+    }
+    if let Some(idv) = root_id_raw {
+        let sanitized = sanitize::sanitize_id(idv);
+        if sanitized.is_empty() {
+            return Err(AppError::InvalidIdAfterSanitize { path: path.display().to_string(), original: idv.to_string() });
+        }
+        if ids::references_id(children, idv) {
+            return Err(AppError::RootIdReferenced { path: path.display().to_string(), id: idv.to_string() });
+        }
+        out_attrs.push(("data-id".to_string(), sanitized));
+    }
+    if let Some(vb) = pending_viewbox { out_attrs.push(("viewBox".to_string(), vb)); }
+
+    let child_ids = ids::extract_ids(children);
+
+    Ok(CacheEntry {
+        mtime: UNIX_EPOCH,
+        len: 0,
+        name,
+        out_attrs,
+        children: children.to_string(),
+        child_ids,
+        path_str: path.display().to_string(),
+    })
+}
+
+fn write_sprite_from_cache(
+    file: &str,
+    cache: &std::collections::HashMap<String, CacheEntry>,
+    order: &[std::path::PathBuf],
+) -> Result<(), AppError> {
+    use std::io::Write as _;
+    let mut writer = std::io::BufWriter::new(
+        std::fs::File::create(file).map_err(|e| AppError::WriteFile { path: file.to_string(), source: e })?,
+    );
+    writer
+        .write_all(b"<svg xmlns=\"http://www.w3.org/2000/svg\"><defs>")
+        .map_err(|e| AppError::WriteFile { path: file.to_string(), source: e })?;
+
+    for p in order {
+        let key = p.display().to_string();
+        if let Some(entry) = cache.get(&key) {
+            let attrs = entry
+                .out_attrs
+                .iter()
+                .map(|(k, v)| format!(r#" {k}="{v}""#))
+                .collect::<String>();
+            writer
+                .write_all(format!(r#"<pattern id="{}"{}>{}</pattern>"#, entry.name, attrs, entry.children).as_bytes())
+                .map_err(|e| AppError::WriteFile { path: file.to_string(), source: e })?;
+        }
+    }
+
+    writer
+        .write_all(b"</defs></svg>")
+        .and_then(|_| writer.flush())
+        .map_err(|e| AppError::WriteFile { path: file.to_string(), source: e })
+}
 
 #[cfg(test)]
 mod tests {

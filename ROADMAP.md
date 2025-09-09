@@ -17,7 +17,7 @@
 
 - [ ] Parallelize file read/parse with `rayon` (bounded concurrency).
 - [x] Stream sprite writing to reduce memory usage for large inputs.
-- [ ] Cache by file mtime/hash for incremental rebuilds during `watch`.
+- [x] Cache by file mtime/hash for incremental rebuilds during `watch`.
 
 ## UX & Error Reporting
 
