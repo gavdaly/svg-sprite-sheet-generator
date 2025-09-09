@@ -1,13 +1,12 @@
 use crate::error::AppError;
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use winnow::{
-    PResult, Parser,
-    ascii::{multispace0, multispace1},
-    combinator::{preceded, terminated},
-    token::{take_until, take_while},
-};
+use winnow::Parser;
+
+mod parsing;
+mod ids;
+mod sanitize;
 
 /// A struct to represent a SVG file
 struct SvgSprite {
@@ -142,7 +141,7 @@ fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
         })?;
         let pre = preprocess_svg_content(&content);
         let mut s = pre.as_str();
-        match parse_svg.parse_next(&mut s) {
+        match parsing::parse_svg.parse_next(&mut s) {
             Ok((attributes, children)) => {
                 // Convert attributes and handle root <svg id> policy: move id -> data-id after sanitization
                 let mut out_attrs: Vec<(String, String)> = Vec::new();
@@ -179,7 +178,7 @@ fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
                 }
 
                 if let Some(idv) = root_id_raw {
-                    let sanitized = sanitize_id(idv);
+                    let sanitized = sanitize::sanitize_id(idv);
                     if sanitized.is_empty() {
                         return Err(AppError::InvalidIdAfterSanitize {
                             path: path.display().to_string(),
@@ -187,7 +186,7 @@ fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
                         });
                     }
                     // Check if root id is referenced internally
-                    if references_id(children, idv) {
+                    if ids::references_id(children, idv) {
                         return Err(AppError::RootIdReferenced {
                             path: path.display().to_string(),
                             id: idv.to_string(),
@@ -201,7 +200,7 @@ fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
                 }
 
                 // Scan children for element ids and detect collisions across files
-                let child_ids = extract_ids(children);
+                let child_ids = ids::extract_ids(children);
                 for cid in child_ids {
                     if let Some(first) = id_registry.get(&cid) {
                         return Err(AppError::IdCollision {
@@ -268,107 +267,7 @@ fn preprocess_svg_content(input: &str) -> String {
 // Sanitize an id by dropping leading invalid chars and replacing internal
 // invalid chars with '-'. Collapse multiple '-' and trim them at ends.
 // Allowed pattern: [A-Za-z_][A-Za-z0-9._-]*
-fn sanitize_id(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut it = raw.chars().peekable();
-    // Drop leading invalid until first valid start char
-    while let Some(&ch) = it.peek() {
-        if is_valid_id_start(ch) {
-            break;
-        }
-        it.next();
-    }
-    // Process the rest
-    let mut prev_dash = false;
-    for ch in it {
-        if is_valid_id_continue(ch) || is_valid_id_start(ch) {
-            out.push(ch);
-            prev_dash = false;
-        } else if !prev_dash {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    // Trim leading/trailing '-'
-    while out.starts_with('-') {
-        out.remove(0);
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    // Collapse any "--" sequences that might remain (defensive)
-    while out.contains("--") {
-        out = out.replace("--", "-");
-    }
-    out
-}
-
-fn is_valid_id_start(ch: char) -> bool {
-    ch == '_' || ch.is_ascii_alphabetic()
-}
-fn is_valid_id_continue(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-'
-}
-
-// Detect simple references to an id within content: href="#id", xlink:href="#id", or url(#id)
-fn references_id(content: &str, id: &str) -> bool {
-    content.contains(&format!("href=\"#{id}\""))
-        || content.contains(&format!("xlink:href=\"#{id}\""))
-        || content.contains(&format!("href='#{id}'"))
-        || content.contains(&format!("xlink:href='#{id}'"))
-        || content.contains(&format!("url(#{id})"))
-}
-
-// Extract all id attribute values from a chunk of SVG/XML text.
-// This is a lightweight scan that matches id="..." and id='...'
-// and avoids matching names like data-id by checking the preceding char.
-fn extract_ids(s: &str) -> Vec<String> {
-    let mut ids = Vec::new();
-    let bytes = s.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        // Look for id=" or id='
-        if i + 4 <= bytes.len() && &bytes[i..i + 3] == b"id=" {
-            let prev = i.checked_sub(1).and_then(|j| bytes.get(j)).copied();
-            if let Some(p) = prev {
-                // If prev is a name char, it's likely part of a longer attr (e.g., data-id)
-                if is_name_char(p as char) {
-                    i += 1;
-                    continue;
-                }
-            }
-            // Determine quote
-            if i + 4 <= bytes.len() {
-                let quote = bytes[i + 3] as char;
-                if quote == '"' || quote == '\'' {
-                    let start = i + 4;
-                    let mut j = start;
-                    while j < bytes.len() {
-                        if bytes[j] as char == quote {
-                            if let Ok(val) = std::str::from_utf8(&bytes[start..j]) {
-                                ids.push(val.to_string());
-                            }
-                            i = j + 1;
-                            break;
-                        }
-                        j += 1;
-                    }
-                    if j >= bytes.len() {
-                        // Unclosed quote; abort scan
-                        break;
-                    }
-                    continue;
-                }
-            }
-        }
-        i += 1;
-    }
-    ids
-}
-
-fn is_name_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == ':'
-}
+// moved: sanitize_id, references_id, extract_ids in submodules
 
 // Parse and normalize positive length values for width/height.
 // Accepts unitless or 'px' suffix. Returns normalized string (e.g., "24").
@@ -445,101 +344,11 @@ fn transform(svgs: Vec<SvgSprite>) -> String {
     result
 }
 
-fn parse_attribute<'s>(input: &mut &'s str) -> PResult<(&'s str, &'s str)> {
-    // Parse an attribute in one of two forms:
-    // - key[ws]?=[ws]?value    (value can be single or double quoted)
-    // - key                    (boolean attribute; value mirrors key)
-    let key = kebab_alpha1.parse_next(input)?;
-    // Try to detect an '=' possibly surrounded by whitespace.
-    let mut lookahead = *input;
-    if parse_eq_ws.parse_next(&mut lookahead).is_ok() {
-        // There is a value. Parse it from the advanced cursor.
-        let val = parse_value.parse_next(&mut lookahead)?;
-        *input = lookahead;
-        Ok((key, val))
-    } else {
-        // Boolean attribute: use key as value to avoid empty string outputs.
-        Ok((key, key))
-    }
-}
-
-fn parse_value<'s>(input: &mut &'s str) -> PResult<&'s str> {
-    // Support both double- and single-quoted values.
-    if input.starts_with('"') {
-        return preceded('"', terminated(take_until(0.., '"'), '"')).parse_next(input);
-    }
-    if input.starts_with('\'') {
-        return preceded('\'', terminated(take_until(0.., '\''), '\'')).parse_next(input);
-    }
-    // Fall back to the double-quoted parser to emit a consistent error
-    preceded('"', terminated(take_until(0.., '"'), '"')).parse_next(input)
-}
-
-fn parse_eq_ws(input: &mut &str) -> PResult<char> {
-    // Consume optional whitespace, '=', optional whitespace
-    multispace0.parse_next(input)?;
-    let eq = '='.parse_next(input)?;
-    multispace0.parse_next(input)?;
-    Ok(eq)
-}
-
-fn kebab_alpha1<'s>(input: &mut &'s str) -> PResult<&'s str> {
-    // Allow letters, digits, hyphen, underscore, and colon (for namespaced attributes like xmlns:xlink)
-    take_while(1.., ('a'..='z', 'A'..='Z', '0'..='9', '-', '_', ':')).parse_next(input)
-}
-
-fn entry_tag<'s>(input: &mut &'s str) -> PResult<&'s str> {
-    terminated("<svg", multispace1).parse_next(input)
-}
-
-fn attributes<'s>(input: &mut &'s str) -> PResult<Vec<(&'s str, &'s str)>> {
-    // Accept zero or more attributes separated by whitespace, allowing
-    // arbitrary whitespace before the closing '>' without failing.
-    // Strategy: parse an optional first attribute, then loop on (ws + attr).
-    multispace0.parse_next(input)?;
-    let mut out: Vec<(&'s str, &'s str)> = Vec::new();
-    if let Ok(first) = parse_attribute.parse_next(input) {
-        out.push(first);
-        loop {
-            let checkpoint = *input;
-            match preceded(multispace1, parse_attribute).parse_next(input) {
-                Ok(attr) => {
-                    out.push(attr);
-                }
-                Err(_) => {
-                    *input = checkpoint;
-                    break;
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn parse_svg<'s>(input: &mut &'s str) -> PResult<(Vec<(&'s str, &'s str)>, &'s str)> {
-    entry_tag.parse_next(input)?;
-    let attrs = attributes.parse_next(input)?;
-    preceded(multispace0, '>').parse_next(input)?;
-    let children = terminated(take_until(0.., "</svg>"), "</svg>").parse_next(input)?;
-    Ok((attrs, children))
-}
-
-#[cfg(test)]
-fn parse_gt(input: &mut &str) -> PResult<char> {
-    preceded(multispace0, '>').parse_next(input)
-}
-
-#[cfg(test)]
-fn parse_children<'a>(input: &'a mut &'a str) -> PResult<&'a str> {
-    terminated(take_until(0.., "</svg>"), "</svg>").parse_next(input)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
     use std::{fs, path::PathBuf};
-    use winnow::Parser;
 
     // Simple temp dir guard to keep tests isolated
     struct TempDir(PathBuf);
@@ -562,104 +371,9 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
-    #[test]
-    fn parse_attribute_test() {
-        let input = &mut r##"fill="#000000""##;
-        let result = parse_attribute.parse_next(input).unwrap();
-        let answer = ("fill", "#000000");
-        assert_eq!(result, answer)
-    }
-    #[test]
-    fn parse_attribute_in_kebab_case_test() {
-        let input = &mut r#"color-interpolation-filters="sRGB""#;
-        let result = parse_attribute.parse_next(input);
-        let answer = ("color-interpolation-filters", "sRGB");
-        assert_eq!(result, Ok(answer))
-    }
-    #[test]
-    fn parse_attribute_key_in_kebab_case_test() {
-        let input = &mut "color-interpolation-filters";
-        let result = kebab_alpha1.parse_next(input);
-        let answer = "color-interpolation-filters";
-        assert_eq!(result, Ok(answer))
-    }
-    #[test]
-    fn parse_attributes_test() {
-        let input = &mut r##"fill="#000000" stroke="red""##;
-        let result = attributes.parse_next(input).unwrap();
-        let answer = vec![("fill", "#000000"), ("stroke", "red")];
-        assert_eq!(result, answer);
-    }
-    #[test]
-    fn parse_attribute_single_quoted() {
-        let input = &mut "width='24'";
-        let result = parse_attribute.parse_next(input).unwrap();
-        assert_eq!(result, ("width", "24"));
-    }
-    #[test]
-    fn parse_attribute_colon_underscore_digits_in_key() {
-        let input = &mut "data_2d:mode=\"on\"";
-        let result = parse_attribute.parse_next(input).unwrap();
-        assert_eq!(result, ("data_2d:mode", "on"));
-    }
-    #[test]
-    fn parse_boolean_attribute() {
-        let input = &mut "focusable";
-        let result = parse_attribute.parse_next(input).unwrap();
-        assert_eq!(result, ("focusable", "focusable"));
-    }
-    #[test]
-    fn parse_svg_simple() {
-        use super::parse_svg;
-        let input = r##"<svg id="test" fill="#000000">Something</svg>"##;
-        match parse_svg.parse(input) {
-            Ok((_vec, children)) => assert_eq!(children, "Something"),
-            Err(e) => panic!("parse_svg error: {e:?}"),
-        };
-    }
+    
 
-    #[test]
-    fn parse_svg_multiline_opening_tag() {
-        let input = r#"<svg
-  id="icon-arrow" width="24" height="24"
-  viewBox="0 0 24 24"
->
-  <path d="M 0 0 L 10 10"/>
-</svg>
-"#;
-        let mut s = input;
-        let (attrs, children) = super::parse_svg.parse_next(&mut s).expect("parse svg");
-        assert!(attrs.iter().any(|(k, v)| *k == "id" && *v == "icon-arrow"));
-        assert!(children.contains("<path"));
-    }
-
-    #[test]
-    fn attributes_parse_multiline_block() {
-        let input = r#"<svg
-  id="icon-arrow" width="24" height="24"
-  viewBox="0 0 24 24"
->
-  <path d="M 0 0 L 10 10"/>
-</svg>
-"#;
-        let mut s = input;
-        entry_tag.parse_next(&mut s).expect("entry tag");
-        let attrs = attributes.parse_next(&mut s).expect("attributes");
-        assert_eq!(attrs.len(), 4);
-        assert!(attrs.iter().any(|(k, _)| *k == "id"));
-        // Ensure we can consume the '>' after optional whitespace
-        parse_gt(&mut s).expect("gt");
-        // And we can read children until closing tag
-        let children = parse_children(&mut s).expect("children");
-        assert!(children.contains("<path"));
-    }
-
-    #[test]
-    fn attributes_with_extra_whitespace_and_newlines() {
-        let mut input = "  fill=\"#333\"\n   stroke=\"red\"  ";
-        let parsed = attributes.parse_next(&mut input).expect("attrs");
-        assert_eq!(parsed, vec![("fill", "#333"), ("stroke", "red")]);
-    }
+    
 
     #[test]
     fn transform_emits_pattern_per_file() {
@@ -726,10 +440,10 @@ mod tests {
 
     #[test]
     fn sanitize_id_drops_leading_and_replaces_invalids() {
-        assert_eq!(sanitize_id("123abc"), "abc");
-        assert_eq!(sanitize_id("-foo"), "foo");
-        assert_eq!(sanitize_id("💥x"), "x");
-        assert_eq!(sanitize_id("data icon@1.5x"), "data-icon-1.5x");
+        assert_eq!(crate::svg::sanitize::sanitize_id("123abc"), "abc");
+        assert_eq!(crate::svg::sanitize::sanitize_id("-foo"), "foo");
+        assert_eq!(crate::svg::sanitize::sanitize_id("💥x"), "x");
+        assert_eq!(crate::svg::sanitize::sanitize_id("data icon@1.5x"), "data-icon-1.5x");
     }
 
     #[test]
@@ -852,25 +566,7 @@ mod tests {
         }
     }
 
-    // Property: sanitize_id outputs only allowed chars, trims dashes, removes duplicates,
-    // and is idempotent. It may return empty if no valid start char exists.
-    proptest! {
-        #[test]
-        fn prop_sanitize_id_valid_and_idempotent(input in ".*") {
-            let out = sanitize_id(&input);
-            if !out.is_empty() {
-                let mut chars = out.chars();
-                let first = chars.next().unwrap();
-                prop_assert!(is_valid_id_start(first));
-                prop_assert!(!out.starts_with('-'));
-                prop_assert!(!out.ends_with('-'));
-                prop_assert!(!out.contains("--"));
-                prop_assert!(out.chars().skip(1).all(is_valid_id_continue));
-                prop_assert!(out.chars().all(|c| !c.is_whitespace()));
-                prop_assert_eq!(sanitize_id(&out), out);
-            }
-        }
-    }
+    // Property tests for sanitize_id live in svg::sanitize
 
     // Property: normalize_length accepts positive numbers (with optional px and whitespace),
     // returns a canonical representation that is idempotent and parsable > 0.
@@ -980,54 +676,9 @@ mod tests {
         }
     }
 
-    // Generate a valid id for use in other props
-    fn arb_valid_id() -> impl Strategy<Value = String> {
-        let alpha_lower = (b'a'..=b'z').prop_map(|b| b as char);
-        let alpha_upper = (b'A'..=b'Z').prop_map(|b| b as char);
-        let digit = (b'0'..=b'9').prop_map(|b| b as char);
-        let start = prop_oneof![Just('_'), alpha_lower.clone(), alpha_upper.clone()];
-        let cont_char = prop_oneof![
-            alpha_lower,
-            alpha_upper,
-            digit,
-            Just('.'),
-            Just('_'),
-            Just('-')
-        ];
-        (start, proptest::collection::vec(cont_char, 0..12)).prop_map(|(s, v)| {
-            let mut id = String::new();
-            id.push(s);
-            for c in v {
-                id.push(c);
-            }
-            // Ensure no consecutive dashes to align with sanitize_id invariants where needed
-            while id.contains("--") {
-                id = id.replace("--", "-");
-            }
-            id
-        })
-    }
+    // ID generators moved to svg::ids tests
 
-    // Property: extract_ids captures only explicit id attributes, not data-id or other suffixes/prefixes.
-    proptest! {
-        #[test]
-        fn prop_extract_ids_matches_inserted(ids in proptest::collection::vec(arb_valid_id(), 0..6)) {
-            use std::collections::BTreeSet;
-            // Build an svg-like content including both id and decoy attributes
-            let mut content = String::from("<svg>");
-            for (i, id) in ids.iter().enumerate() {
-                let tag = if i % 2 == 0 { "g" } else { "path" };
-                // include decoys around
-                content.push_str(&format!("<{tag} data-id=\"not{id}\" id='{id}' data_id=\"x\"/>"));
-                content.push_str(&format!("<use data-id=\"{id}\" />"));
-            }
-            content.push_str("</svg>");
-            let extracted = extract_ids(&content);
-            let got: BTreeSet<_> = extracted.into_iter().collect();
-            let want: BTreeSet<_> = ids.into_iter().collect();
-            prop_assert_eq!(got, want);
-        }
-    }
+    // Property tests for ids::extract_ids live in svg::ids
 
     // Property: preprocess_svg_content removes BOM, xml prolog, and leading comments before <svg>
     proptest! {
@@ -1047,14 +698,5 @@ mod tests {
         }
     }
 
-    // Property: references_id detects specific references and does not trigger on other ids
-    proptest! {
-        #[test]
-        fn prop_references_id_detects(needle in arb_valid_id(), other in arb_valid_id()) {
-            prop_assume!(needle != other);
-            let content = format!("<use href=\"#{needle}\"/><use xlink:href=\"#{needle}\"/><rect fill=\"url(#{needle})\"/>");
-            prop_assert!(references_id(&content, &needle));
-            prop_assert!(!references_id(&content, &other));
-        }
-    }
+    // Property tests for ids::references_id live in svg::ids
 }
