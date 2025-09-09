@@ -22,7 +22,6 @@ pub enum AppError {
     NoSvgFiles {
         path: String,
     },
-    Unimplemented(&'static str),
 }
 
 impl fmt::Display for AppError {
