@@ -29,3 +29,45 @@ jobs:
       - name: Tests
         run: cargo test --all-features --no-fail-fast
 
+  coverage:
+    name: Coverage
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate coverage (lcov)
+        run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+
+      - name: Upload lcov artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov-${{ runner.os }}
+          path: lcov.info
+
+      - name: Generate HTML report
+        run: |
+          cargo llvm-cov --workspace --all-features --html
+
+      - name: Upload HTML artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html-${{ runner.os }}
+          path: target/llvm-cov/html

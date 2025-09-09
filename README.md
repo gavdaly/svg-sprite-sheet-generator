@@ -155,6 +155,10 @@ If you prefer `<symbol>`-based sprites for `<use>`, consider wrapping your icon 
 - Format: `cargo fmt`
 - Lint: `cargo clippy -- -D warnings`
 - Tests: `cargo test`
+- Coverage (macOS/Linux):
+  - Install: `cargo install cargo-llvm-cov`
+  - Run: `./scripts/coverage.sh`
+  - Outputs: text summary, `lcov.info`, and HTML at `target/llvm-cov/html/index.html`
 
 ## Releases
 - Follow the steps in `RELEASE.md` to version, build, package, and publish.

@@ -1,3 +1,4 @@
 target
 svgs
 *.svg
+lcov.info
