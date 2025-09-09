@@ -45,3 +45,10 @@
 ## Agent-Specific Instructions
 - Keep changes minimal and scoped; do not rename files or public APIs without discussion.
 - Follow this guide’s style; run `cargo fmt`, `cargo clippy`, and add/adjust tests for parsing changes.
+- Avoid inline code comments; prefer smaller, well‑named functions to keep intent clear.
+- Use Rust doc comments (`///`) on public items, with concise examples in fenced code blocks.
+- Write doctestable examples that run under `cargo test` (hide setup with `#` when needed).
+
+### Agent Preflight
+- When starting work and before handing off, run: `bash scripts/dev_checks.sh`.
+- The script formats the code, runs clippy with warnings as errors, and executes tests.

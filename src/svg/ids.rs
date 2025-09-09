@@ -9,7 +9,6 @@ pub(crate) fn references_id(content: &str, id: &str) -> bool {
         || content.contains(&format!("url(#{id})"))
 }
 
-
 fn is_name_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == ':'
 }
@@ -45,7 +44,9 @@ pub(crate) fn rewrite_ids_to_data_ids(s: &str) -> (String, Vec<String>) {
                     while j < bytes.len() {
                         if bytes[j] as char == quote {
                             // Extract value
-                            if let Ok(val) = std::str::from_utf8(&bytes[start..j]).map(|v| v.to_string()) {
+                            if let Ok(val) =
+                                std::str::from_utf8(&bytes[start..j]).map(|v| v.to_string())
+                            {
                                 // Sanitize and disambiguate
                                 let mut sanitized = crate::svg::sanitize::sanitize_id(&val);
                                 if sanitized.is_empty() {
@@ -143,7 +144,10 @@ mod tests {
         assert!(out.contains("data-id=\"a\""));
         assert!(out.contains("data-id='a-2'"));
         assert!(out.contains("data-id=\"b\""));
-        assert_eq!(ids, vec!["a".to_string(), "a-2".to_string(), "b".to_string()]);
+        assert_eq!(
+            ids,
+            vec!["a".to_string(), "a-2".to_string(), "b".to_string()]
+        );
         assert!(!out.contains(" id=\""));
         assert!(!out.contains(" id='"));
     }
