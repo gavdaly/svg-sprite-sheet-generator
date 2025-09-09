@@ -29,6 +29,39 @@ jobs:
       - name: Tests
         run: cargo test --all-features --no-fail-fast
 
+  security:
+    name: Security and Policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: cargo-audit (RustSec advisories)
+        run: cargo audit --deny warnings
+
+      - name: cargo-deny (licenses, bans, sources, advisories)
+        run: |
+          cargo deny check licenses
+          cargo deny check bans
+          cargo deny check sources
+          cargo deny check advisories
+
   coverage:
     name: Coverage
     strategy:

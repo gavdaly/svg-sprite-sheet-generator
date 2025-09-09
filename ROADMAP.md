@@ -29,7 +29,7 @@
 
 - [x] GitHub Actions workflow: fmt, clippy, test (matrix: macOS, Linux, Windows; include MSRV).
 - [x] Coverage reporting (`cargo-llvm-cov` or `tarpaulin`).
-- [ ] Security and policy checks: `cargo-audit`, `cargo-deny` (licenses/vulns).
+- [x] Security and policy checks: `cargo-audit`, `cargo-deny` (licenses/vulns).
 - [x] Pin toolchain in `rust-toolchain.toml`.
 
 ## Testing

@@ -155,6 +155,9 @@ If you prefer `<symbol>`-based sprites for `<use>`, consider wrapping your icon 
 - Format: `cargo fmt`
 - Lint: `cargo clippy -- -D warnings`
 - Tests: `cargo test`
+- Security checks:
+  - Vulnerabilities: `cargo audit`
+  - Licenses/policy: `cargo deny check licenses bans sources advisories`
 - Coverage (macOS/Linux):
   - Install: `cargo install cargo-llvm-cov`
   - Run: `./scripts/coverage.sh`
@@ -172,3 +175,14 @@ If you prefer `<symbol>`-based sprites for `<use>`, consider wrapping your icon 
 
 ## Roadmap
 - See `ROADMAP.md` for detailed backlog and priorities.
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT license (LICENSE-MIT or http://opensource.org/licenses/MIT)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
