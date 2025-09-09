@@ -1,6 +1,7 @@
 use super::SvgSprite;
 
 // Render the final sprite XML from a list of parsed SvgSprite entries
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn transform(svgs: Vec<SvgSprite>) -> String {
     let mut result = svgs.iter().fold(
         String::from(r#"<svg xmlns="http://www.w3.org/2000/svg"><defs>"#),
@@ -21,4 +22,3 @@ pub(crate) fn transform(svgs: Vec<SvgSprite>) -> String {
     result.push_str("</defs></svg>");
     result
 }
-

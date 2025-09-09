@@ -1,16 +1,17 @@
 use crate::error::AppError;
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use winnow::Parser;
 
-mod parsing;
 mod ids;
-mod sanitize;
 mod normalize;
+mod parsing;
+mod sanitize;
 mod transform;
 
 /// A struct to represent a SVG file
+#[cfg_attr(not(test), allow(dead_code))]
 struct SvgSprite {
     /// The name of the SVG file
     name: String,
@@ -35,16 +36,159 @@ impl SvgSprite {
     }
 }
 
-/// Parse SVG file and return a SvgSprite struct
+/// Parse input svgs and stream-write the sprite to the output file to minimize memory usage.
 pub fn process(directory: &str, file: &str) -> Result<(), AppError> {
-    let svgs = load_svgs(directory)?;
-    if svgs.is_empty() {
+    // Collect candidate SVG file entries first to detect empty inputs without creating output.
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(directory)
+        .map_err(|e| AppError::ReadDir {
+            path: directory.to_string(),
+            source: e,
+        })?
+        .filter_map(|e| e.ok().map(|de| de.path()))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "svg"))
+        .collect();
+
+    if entries.is_empty() {
         return Err(AppError::NoSvgFiles {
             path: directory.to_string(),
         });
     }
-    let sprite = transform::transform(svgs);
-    write_sprite(&sprite, file)?;
+
+    let mut writer =
+        std::io::BufWriter::new(
+            std::fs::File::create(file).map_err(|e| AppError::WriteFile {
+                path: file.to_string(),
+                source: e,
+            })?,
+        );
+
+    use std::io::Write as _;
+    writer
+        .write_all(b"<svg xmlns=\"http://www.w3.org/2000/svg\"><defs>")
+        .map_err(|e| AppError::WriteFile {
+            path: file.to_string(),
+            source: e,
+        })?;
+
+    // Global registry of ids to detect duplicates across all inputs
+    let mut id_registry: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    for path in entries {
+        let file_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let name = file_name.trim_end_matches(".svg").to_string();
+        let content = std::fs::read_to_string(&path).map_err(|e| AppError::ReadFile {
+            path: path.display().to_string(),
+            source: e,
+        })?;
+
+        let pre = preprocess_svg_content(&content);
+        let mut s = pre.as_str();
+        let (attributes, children) = match parsing::parse_svg.parse_next(&mut s) {
+            Ok(ok) => ok,
+            Err(e) => {
+                return Err(AppError::ParseSvg {
+                    path: path.display().to_string(),
+                    message: format!("{e:?}"),
+                });
+            }
+        };
+
+        // Convert attributes and handle root <svg id> policy: move id -> data-id after sanitization
+        let mut out_attrs: Vec<(String, String)> = Vec::new();
+        let mut root_id_raw: Option<&str> = None;
+        let mut pending_viewbox: Option<String> = None;
+        for (k, v) in &attributes {
+            if *k == "id" {
+                root_id_raw = Some(v);
+            } else if *k == "width" || *k == "height" {
+                match normalize::normalize_length(v) {
+                    Some(nv) => out_attrs.push(((*k).to_string(), nv)),
+                    None => {
+                        return Err(AppError::InvalidDimension {
+                            path: path.display().to_string(),
+                            attr: (*k).to_string(),
+                            value: (*v).to_string(),
+                        });
+                    }
+                }
+            } else if *k == "viewBox" {
+                match normalize::normalize_viewbox(v) {
+                    Some(vb) => pending_viewbox = Some(vb),
+                    None => {
+                        return Err(AppError::InvalidViewBox {
+                            path: path.display().to_string(),
+                            value: (*v).to_string(),
+                        });
+                    }
+                }
+            } else {
+                out_attrs.push(((*k).to_string(), (*v).to_string()));
+            }
+        }
+
+        if let Some(idv) = root_id_raw {
+            let sanitized = sanitize::sanitize_id(idv);
+            if sanitized.is_empty() {
+                return Err(AppError::InvalidIdAfterSanitize {
+                    path: path.display().to_string(),
+                    original: idv.to_string(),
+                });
+            }
+            if ids::references_id(children, idv) {
+                return Err(AppError::RootIdReferenced {
+                    path: path.display().to_string(),
+                    id: idv.to_string(),
+                });
+            }
+            out_attrs.push(("data-id".to_string(), sanitized));
+        }
+        if let Some(vb) = pending_viewbox {
+            out_attrs.push(("viewBox".to_string(), vb));
+        }
+
+        // Scan children for element ids and detect collisions across files
+        for cid in ids::extract_ids(children) {
+            if let Some(first) = id_registry.get(&cid) {
+                return Err(AppError::IdCollision {
+                    id: cid,
+                    first_path: first.clone(),
+                    second_path: path.display().to_string(),
+                });
+            } else {
+                id_registry.insert(cid, path.display().to_string());
+            }
+        }
+
+        // Stream write one pattern element
+        writer
+            .write_all(
+                format!(
+                    r#"<pattern id="{name}"{}>{children}</pattern>"#,
+                    out_attrs
+                        .iter()
+                        .map(|(k, v)| format!(r#" {k}="{v}""#))
+                        .collect::<String>()
+                )
+                .as_bytes(),
+            )
+            .map_err(|e| AppError::WriteFile {
+                path: file.to_string(),
+                source: e,
+            })?;
+    }
+
+    writer
+        .write_all(b"</defs></svg>")
+        .and_then(|_| writer.flush())
+        .map_err(|e| AppError::WriteFile {
+            path: file.to_string(),
+            source: e,
+        })?;
+
     Ok(())
 }
 
@@ -113,133 +257,10 @@ fn hash_time(t: &SystemTime, hasher: &mut DefaultHasher) {
         dur.subsec_nanos().hash(hasher);
     }
 }
-/// Loads all the svg files in the directory
-fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
-    let entries = std::fs::read_dir(directory).map_err(|e| AppError::ReadDir {
-        path: directory.to_string(),
-        source: e,
-    })?;
-
-    let mut sprites = Vec::new();
-    // Global registry of ids to detect duplicates across all inputs
-    let mut id_registry: HashMap<String, String> = HashMap::new(); // id -> first_path
-    for entry in entries {
-        let entry = entry.map_err(|e| AppError::ReadDir {
-            path: directory.to_string(),
-            source: e,
-        })?;
-        let path = entry.path();
-        let file_name = entry.file_name();
-        let Ok(name_str) = file_name.into_string() else {
-            continue;
-        };
-        if !name_str.ends_with(".svg") {
-            continue;
-        }
-        let name = name_str.trim_end_matches(".svg").to_string();
-        let content = std::fs::read_to_string(&path).map_err(|e| AppError::ReadFile {
-            path: path.display().to_string(),
-            source: e,
-        })?;
-        let pre = preprocess_svg_content(&content);
-        let mut s = pre.as_str();
-        match parsing::parse_svg.parse_next(&mut s) {
-            Ok((attributes, children)) => {
-                // Convert attributes and handle root <svg id> policy: move id -> data-id after sanitization
-                let mut out_attrs: Vec<(String, String)> = Vec::new();
-                let mut root_id_raw: Option<&str> = None;
-                let mut pending_viewbox: Option<String> = None;
-                for (k, v) in &attributes {
-                    if *k == "id" {
-                        root_id_raw = Some(v);
-                    } else if *k == "width" || *k == "height" {
-                        // Validate and normalize positive numeric width/height, allow optional 'px'
-                        match normalize::normalize_length(v) {
-                            Some(nv) => out_attrs.push(((*k).to_string(), nv)),
-                            None => {
-                                return Err(AppError::InvalidDimension {
-                                    path: path.display().to_string(),
-                                    attr: (*k).to_string(),
-                                    value: (*v).to_string(),
-                                });
-                            }
-                        }
-                    } else if *k == "viewBox" {
-                        match normalize::normalize_viewbox(v) {
-                            Some(vb) => pending_viewbox = Some(vb),
-                            None => {
-                                return Err(AppError::InvalidViewBox {
-                                    path: path.display().to_string(),
-                                    value: (*v).to_string(),
-                                });
-                            }
-                        }
-                    } else {
-                        out_attrs.push(((*k).to_string(), (*v).to_string()));
-                    }
-                }
-
-                if let Some(idv) = root_id_raw {
-                    let sanitized = sanitize::sanitize_id(idv);
-                    if sanitized.is_empty() {
-                        return Err(AppError::InvalidIdAfterSanitize {
-                            path: path.display().to_string(),
-                            original: idv.to_string(),
-                        });
-                    }
-                    // Check if root id is referenced internally
-                    if ids::references_id(children, idv) {
-                        return Err(AppError::RootIdReferenced {
-                            path: path.display().to_string(),
-                            id: idv.to_string(),
-                        });
-                    }
-                    out_attrs.push(("data-id".to_string(), sanitized));
-                }
-
-                if let Some(vb) = pending_viewbox {
-                    out_attrs.push(("viewBox".to_string(), vb));
-                }
-
-                // Scan children for element ids and detect collisions across files
-                let child_ids = ids::extract_ids(children);
-                for cid in child_ids {
-                    if let Some(first) = id_registry.get(&cid) {
-                        return Err(AppError::IdCollision {
-                            id: cid,
-                            first_path: first.clone(),
-                            second_path: path.display().to_string(),
-                        });
-                    } else {
-                        id_registry.insert(cid, path.display().to_string());
-                    }
-                }
-
-                sprites.push(SvgSprite {
-                    name,
-                    attributes: out_attrs,
-                    children: children.to_string(),
-                });
-            }
-            Err(e) => {
-                let p = path.display().to_string();
-                return Err(AppError::ParseSvg {
-                    path: p,
-                    message: format!("{e:?}"),
-                });
-            }
-        }
-    }
-    Ok(sprites)
-}
+// removed: load_svgs; streaming write avoids building all SVGs in memory
 
 /// Write the sprite to a file
-fn write_sprite(sprite: &str, file: &str) -> Result<(), AppError> {
-    std::fs::write(file, sprite).map_err(|e| AppError::WriteFile {
-        path: file.to_string(),
-        source: e,
-    })
-}
+// removed: write_sprite; streaming write is handled in process
 
 // Strip BOM, leading XML prolog, and comments before the root <svg> tag
 fn preprocess_svg_content(input: &str) -> String {
@@ -304,9 +325,6 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
-    
-
-    
 
     #[test]
     fn transform_emits_pattern_per_file() {
@@ -376,7 +394,10 @@ mod tests {
         assert_eq!(crate::svg::sanitize::sanitize_id("123abc"), "abc");
         assert_eq!(crate::svg::sanitize::sanitize_id("-foo"), "foo");
         assert_eq!(crate::svg::sanitize::sanitize_id("💥x"), "x");
-        assert_eq!(crate::svg::sanitize::sanitize_id("data icon@1.5x"), "data-icon-1.5x");
+        assert_eq!(
+            crate::svg::sanitize::sanitize_id("data icon@1.5x"),
+            "data-icon-1.5x"
+        );
     }
 
     #[test]

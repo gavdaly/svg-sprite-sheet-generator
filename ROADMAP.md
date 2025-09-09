@@ -16,7 +16,7 @@
 ## Performance
 
 - [ ] Parallelize file read/parse with `rayon` (bounded concurrency).
-- [ ] Stream sprite writing to reduce memory usage for large inputs.
+- [x] Stream sprite writing to reduce memory usage for large inputs.
 - [ ] Cache by file mtime/hash for incremental rebuilds during `watch`.
 
 ## UX & Error Reporting
@@ -27,7 +27,7 @@
 
 ## Tooling & CI
 
-- [ ] GitHub Actions workflow: fmt, clippy, test (matrix: macOS, Linux, Windows; include MSRV).
+- [x] GitHub Actions workflow: fmt, clippy, test (matrix: macOS, Linux, Windows; include MSRV).
 - [ ] Coverage reporting (`cargo-llvm-cov` or `tarpaulin`).
 - [ ] Security and policy checks: `cargo-audit`, `cargo-deny` (licenses/vulns).
 - [ ] Pin toolchain in `rust-toolchain.toml`.
