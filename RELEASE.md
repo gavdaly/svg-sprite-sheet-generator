@@ -26,7 +26,12 @@
 ## Tag and Release (automated)
 There is a GitHub Actions workflow that builds and uploads release artifacts and a checksum file when a SemVer tag is pushed (e.g., `v1.2.3`).
 
-- Bump version and tag (using cargo-release recommended):
+- Quick helper (recommended):
+  - `scripts/release.sh [--dry-run] [--no-push] <major|minor|patch|X.Y.Z>`
+    - Runs dev checks, bumps `Cargo.toml`, commits `chore(release): vX.Y.Z`, tags `vX.Y.Z`, and pushes (unless `--no-push`).
+    - If `cargo-release` is installed, the script delegates to `cargo release` with the same spec.
+
+- Bump version and tag (using cargo-release directly):
   - `cargo install cargo-release` (first time only)
   - `cargo release <level-or-version> --execute` (e.g., `cargo release minor --execute`)
     - Creates commit, tag `vX.Y.Z`, and pushes.

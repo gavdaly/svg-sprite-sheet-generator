@@ -1,15 +1,16 @@
-[release]
-# Tag format like v1.2.3
 tag-prefix = "v"
 tag-name = "v{{version}}"
 push = true
 sign-tag = false
 sign-commit = false
 
-# Commit messages
+# Disable publish/verify in local env; CI can handle artifacts
+publish = false
+verify = false
+owners = []
+
+# Commit message for the release commit
 pre-release-commit-message = "chore(release): v{{version}}"
-post-release-commit-message = "chore: start next development iteration {{next_version}}"
 
 # Allow running from a clean tree only
 allow-branch = ["main", "master"]
-
