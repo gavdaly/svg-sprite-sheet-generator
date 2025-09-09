@@ -10,12 +10,12 @@
 
 - [x] Attribute values: allow single quotes, digits, underscores, colons (e.g., `xmlns:*`), and boolean attributes.
 - [x] Normalize/validate `viewBox`, `width`/`height`; handle BOM, XML prolog, comments.
-- [ ] Optional `quick-xml` parser for full XML compliance; keep lightweight fast-path.
+- [NO] Not worried about valid xml. Use `quick-xml` parser for full XML compliance; keep lightweight fast-path.
 - [x] Stable id generation, collision detection, and id sanitization.
 
 ## Performance
 
-- [ ] Parallelize file read/parse with `rayon` (bounded concurrency).
+- [NO] No need for Keep it single threaded. Parallelize file read/parse with `rayon` (bounded concurrency).
 - [x] Stream sprite writing to reduce memory usage for large inputs.
 - [x] Cache by file mtime/hash for incremental rebuilds during `watch`.
 
@@ -30,7 +30,7 @@
 - [x] GitHub Actions workflow: fmt, clippy, test (matrix: macOS, Linux, Windows; include MSRV).
 - [x] Coverage reporting (`cargo-llvm-cov` or `tarpaulin`).
 - [ ] Security and policy checks: `cargo-audit`, `cargo-deny` (licenses/vulns).
-- [ ] Pin toolchain in `rust-toolchain.toml`.
+- [x] Pin toolchain in `rust-toolchain.toml`.
 
 ## Testing
 
@@ -42,7 +42,7 @@
 ## Packaging & Release
 
 - [ ] Automate releases with `cargo-release` or `cargo-dist` (artifacts + checksums).
-- [ ] Publish completions and man page with releases; attach SBOM.
+- [x] Publish completions and man page with releases; attach SBOM.
 - [ ] Add formulas/manifests: Homebrew tap, Scoop bucket, Nix flake, winget.
 
 ## Documentation

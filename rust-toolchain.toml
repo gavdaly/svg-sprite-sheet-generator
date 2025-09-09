@@ -1,0 +1,7 @@
+[toolchain]
+# Use the stable channel to match CI and ensure reproducible builds.
+# If you need a specific version or nightly, let us know and we'll pin it.
+channel = "stable"
+profile = "minimal"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
+
