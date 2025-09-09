@@ -51,5 +51,4 @@ Commands:
 - Error handling is improving; avoid write-protected output locations.
 
 ## Roadmap
-- Implement `watch` subcommand for live regeneration.
-- Expand parsing robustness and error messages.
+- See `ROADMAP.md` for detailed backlog and priorities.
