@@ -49,6 +49,8 @@ pub enum AppError {
         path: String,
         value: String,
     },
+    /// Warnings were emitted and --fail-on-warn was set
+    WarningsPresent { count: usize },
 }
 
 impl fmt::Display for AppError {
@@ -83,6 +85,10 @@ impl fmt::Display for AppError {
             AppError::InvalidViewBox { path, value } => write!(
                 f,
                 "invalid viewBox='{value}' in {path}; expected four numbers with positive width/height"
+            ),
+            AppError::WarningsPresent { count } => write!(
+                f,
+                "aborting due to {count} warning(s) (use --no-fail-on-warn to ignore)"
             ),
         }
     }

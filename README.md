@@ -14,14 +14,22 @@ A small Rust CLI that combines individual SVG files into a single sprite. Each S
 svg_sheet [OPTIONS] [COMMAND]
 
 Options:
-  -f, --file <FILE>       Output sprite file (default: sprite.svg)
-  -d, --directory <DIR>   Input directory of SVGs (default: svgs)
-  -h, --help              Print help
-  -V, --version           Print version
+  -f, --file <FILE>         Output sprite file (default: sprite.svg)
+  -d, --directory <DIR>     Input directory of SVGs (default: svgs)
+      --poll                Use polling instead of event-based watch
+      --debounce-ms <N>     Debounce interval (ms) for event-based watch [default: 300]
+      --quiet               Suppress non-error output
+      --verbose             Increase verbosity
+      --dry-run             Parse/validate without writing output
+      --fail-on-warn        Treat warnings as errors
+  -h, --help                Print help
+  -V, --version             Print version
 
 Commands:
-  build   Generate the sprite (same as default)
-  watch   Watch for changes (coming soon)
+  build                     Generate the sprite (same as default)
+  watch                     Watch for changes and rebuild
+  completions <SHELL>       Generate shell completions
+  man                       Generate a man page
 ```
 
 ## How It Works
@@ -34,6 +42,30 @@ Commands:
 - Default directories/files: `cargo run`
 - Custom output file: `cargo run -- -f sprite2.svg`
 - Custom input directory: `cargo run -- -d assets/icons`
+ - Dry run with strict warnings: `cargo run -- --dry-run --fail-on-warn build`
+ - Event-based watch with debounce: `cargo run -- --debounce-ms 500 watch`
+ - Polling watch: `cargo run -- --poll watch`
+
+### Subcommands
+
+- `build`: One-shot sprite generation (default when no subcommand).
+- `watch`: Watch the input directory and rebuild on changes.
+- `completions <shell>`: Generate shell completion script.
+  - Shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`.
+  - Example: `cargo run -- completions bash -o ./completions`
+- `man`: Generate a man page for the CLI.
+  - Example: `cargo run -- man -o ./man`
+
+### Warnings
+
+The tool emits warnings for common but non-fatal issues. By default, warnings are printed but do not affect exit status. Use `--fail-on-warn` to abort on any warnings.
+
+Current warnings:
+
+- Root `<svg id>` is moved to `data-id` in the output (the root id is not preserved).
+- Missing `width` on the root `<svg>`.
+- Missing `height` on the root `<svg>`.
+- Missing `viewBox` on the root `<svg>`.
 
 ## Using <use> With Generated Ids
 

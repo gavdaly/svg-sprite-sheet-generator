@@ -2,9 +2,9 @@
 
 ## Features
 
-- [ ] Event-based `watch` using `notify` with debounce; `--poll` fallback.
-- [ ] Verbosity flags: `--quiet`, `--verbose`; `--dry-run` and `--fail-on-warn`.
-- [ ] Shell completions and man page via `clap_complete` and `clap_mangen`.
+- [x] Event-based `watch` using `notify` with debounce; `--poll` fallback.
+- [x] Verbosity flags: `--quiet`, `--verbose`; `--dry-run` and `--fail-on-warn`.
+- [x] Shell completions and man page via `clap_complete` and `clap_mangen`.
 
 ## Parsing & Robustness
 
