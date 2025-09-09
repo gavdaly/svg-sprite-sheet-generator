@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use winnow::{
     PResult, Parser,
     ascii::{multispace0, multispace1},
-    combinator::{preceded, separated, separated_pair, terminated},
+    combinator::{preceded, separated_pair, terminated},
     token::{take_until, take_while},
 };
 
@@ -192,22 +192,63 @@ fn entry_tag<'s>(input: &mut &'s str) -> PResult<&'s str> {
 }
 
 fn attributes<'s>(input: &mut &'s str) -> PResult<Vec<(&'s str, &'s str)>> {
-    preceded(multispace0, separated(0.., parse_attribute, multispace1)).parse_next(input)
+    // Accept zero or more attributes separated by whitespace, allowing
+    // arbitrary whitespace before the closing '>' without failing.
+    // Strategy: parse an optional first attribute, then loop on (ws + attr).
+    multispace0.parse_next(input)?;
+    let mut out: Vec<(&'s str, &'s str)> = Vec::new();
+    if let Ok(first) = parse_attribute.parse_next(input) {
+        out.push(first);
+        loop {
+            let checkpoint = *input;
+            match preceded(multispace1, parse_attribute).parse_next(input) {
+                Ok(attr) => { out.push(attr); },
+                Err(_) => { *input = checkpoint; break; }
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn parse_svg<'s>(input: &mut &'s str) -> PResult<(Vec<(&'s str, &'s str)>, &'s str)> {
-    separated_pair(
-        preceded(entry_tag, attributes),
-        preceded(multispace0, '>'),
-        terminated(take_until(0.., "</svg>"), "</svg>"),
-    )
-    .parse_next(input)
+    entry_tag.parse_next(input)?;
+    let attrs = attributes.parse_next(input)?;
+    preceded(multispace0, '>').parse_next(input)?;
+    let children = terminated(take_until(0.., "</svg>"), "</svg>").parse_next(input)?;
+    Ok((attrs, children))
+}
+
+fn parse_gt<'s>(input: &mut &'s str) -> PResult<char> {
+    preceded(multispace0, '>').parse_next(input)
+}
+
+fn parse_children<'s>(input: &mut &'s str) -> PResult<&'s str> {
+    terminated(take_until(0.., "</svg>"), "</svg>").parse_next(input)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use winnow::Parser;
+    use std::{fs, path::PathBuf};
+
+    // Simple temp dir guard to keep tests isolated
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(prefix: &str) -> Self {
+            let mut p = std::env::temp_dir();
+            let unique = format!("{}_{}", prefix, std::process::id());
+            p.push(unique);
+            // Best-effort cleanup if it already exists
+            let _ = fs::remove_dir_all(&p);
+            fs::create_dir_all(&p).unwrap();
+            TempDir(p)
+        }
+        fn path(&self) -> &std::path::Path { &self.0 }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
     #[test]
     fn parse_attribute_test() {
         let input = &mut r##"fill="#000000""##;
@@ -237,7 +278,7 @@ mod tests {
         assert_eq!(result, answer);
     }
     #[test]
-    fn parse_svg() {
+    fn parse_svg_simple() {
         use super::parse_svg;
         let input = r##"<svg id="test" fill="#000000">Something</svg>"##;
         match parse_svg.parse(input) {
@@ -247,5 +288,97 @@ mod tests {
                 assert!(false)
             }
         };
+    }
+
+    #[test]
+    fn parse_svg_multiline_opening_tag() {
+        let input = r#"<svg
+  id="icon-arrow" width="24" height="24"
+  viewBox="0 0 24 24"
+>
+  <path d="M 0 0 L 10 10"/>
+</svg>
+"#;
+        let mut s = input;
+        let (attrs, children) = super::parse_svg.parse_next(&mut s).expect("parse svg");
+        assert!(attrs.iter().any(|(k, v)| *k == "id" && *v == "icon-arrow"));
+        assert!(children.contains("<path"));
+    }
+
+    #[test]
+    fn attributes_parse_multiline_block() {
+        let input = r#"<svg
+  id="icon-arrow" width="24" height="24"
+  viewBox="0 0 24 24"
+>
+  <path d="M 0 0 L 10 10"/>
+</svg>
+"#;
+        let mut s = input;
+        entry_tag.parse_next(&mut s).expect("entry tag");
+        let attrs = attributes.parse_next(&mut s).expect("attributes");
+        assert_eq!(attrs.len(), 4);
+        assert!(attrs.iter().any(|(k, _)| *k == "id"));
+        // Ensure we can consume the '>' after optional whitespace
+        parse_gt(&mut s).expect("gt");
+        // And we can read children until closing tag
+        let children = parse_children(&mut s).expect("children");
+        assert!(children.contains("<path"));
+    }
+
+    #[test]
+    fn attributes_with_extra_whitespace_and_newlines() {
+        let mut input = "  fill=\"#333\"\n   stroke=\"red\"  ";
+        let parsed = attributes.parse_next(&mut input).expect("attrs");
+        assert_eq!(parsed, vec![("fill", "#333"), ("stroke", "red")]);
+    }
+
+    #[test]
+    fn transform_emits_pattern_per_file() {
+        let svgs = vec![
+            SvgSprite::new("one".into(), vec![("width", "24"), ("height", "24")], "<g/>".into()),
+            SvgSprite::new("two".into(), vec![("fill", "#000")], "<circle/>".into()),
+        ];
+        let out = transform(svgs);
+        assert!(out.starts_with("<svg"));
+        assert!(out.contains("<defs>"));
+        assert!(out.contains("<pattern id=\"one\" width=\"24\" height=\"24\"><g/>") );
+        assert!(out.contains("<pattern id=\"two\" fill=\"#000\"><circle/>") );
+        assert!(out.ends_with("</defs></svg>"));
+    }
+
+    #[test]
+    fn process_empty_directory_yields_error() {
+        let tmp = TempDir::new("svg_sheet_empty");
+        let err = process(tmp.path().to_str().unwrap(), &tmp.path().join("out.svg").display().to_string())
+            .expect_err("expected error");
+        match err { AppError::NoSvgFiles { .. } => {}, _ => panic!("wrong error: {err}") }
+    }
+
+    #[test]
+    fn load_and_build_from_real_files() {
+        let tmp = TempDir::new("svg_sheet_build");
+        let dir = tmp.path();
+        // Create a couple of minimal SVGs
+        fs::write(dir.join("a.svg"), "<svg width=\"10\" height=\"10\"><rect/></svg>").unwrap();
+        fs::write(dir.join("b.svg"), "<svg id=\"b\"><g/></svg>").unwrap();
+        let out = dir.join("sprite.svg");
+        process(dir.to_str().unwrap(), out.to_str().unwrap()).expect("build ok");
+        let sprite = fs::read_to_string(&out).expect("read sprite");
+        assert!(sprite.contains("pattern id=\"a\""));
+        assert!(sprite.contains("pattern id=\"b\""));
+    }
+
+    #[test]
+    fn dir_state_hash_changes_on_update() {
+        let tmp = TempDir::new("svg_sheet_hash");
+        let dir = tmp.path();
+        fs::write(dir.join("c.svg"), "<svg id=\"c\"></svg>").unwrap();
+        let h1 = dir_state_hash(dir.to_str().unwrap()).expect("hash1");
+        // Touch file update
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(dir.join("c.svg"), "<svg id=\"c2\"></svg>").unwrap();
+        let h2 = dir_state_hash(dir.to_str().unwrap()).expect("hash2");
+        assert_ne!(h1, h2);
     }
 }

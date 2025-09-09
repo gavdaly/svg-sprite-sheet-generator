@@ -34,7 +34,6 @@ impl fmt::Display for AppError {
                 write!(f, "failed to parse svg ({path}): {message}")
             }
             AppError::NoSvgFiles { path } => write!(f, "no SVG files found in directory: {path}"),
-            AppError::Unimplemented(feature) => write!(f, "not yet implemented: {feature}"),
         }
     }
 }
