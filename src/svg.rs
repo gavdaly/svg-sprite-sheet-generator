@@ -1,11 +1,10 @@
+use crate::error::AppError;
 use winnow::{
+    PResult, Parser,
     ascii::{multispace0, multispace1},
     combinator::{preceded, separated, separated_pair, terminated},
     token::{take_until, take_while},
-    PResult, Parser,
 };
-use crate::error::AppError;
-
 
 /// A struct to represent a SVG file
 struct SvgSprite {
@@ -35,7 +34,9 @@ impl SvgSprite {
 pub fn process(directory: &str, file: &str) -> Result<(), AppError> {
     let svgs = load_svgs(directory)?;
     if svgs.is_empty() {
-        return Err(AppError::NoSvgFiles { path: directory.to_string() });
+        return Err(AppError::NoSvgFiles {
+            path: directory.to_string(),
+        });
     }
     let sprite = transform(svgs);
     write_sprite(&sprite, file)?;
@@ -43,16 +44,23 @@ pub fn process(directory: &str, file: &str) -> Result<(), AppError> {
 }
 
 /// Loads all the svg files in the directory
-fn load_svgs<'b>(directory: &'b str) -> Result<Vec<SvgSprite>, AppError> {
-    let entries = std::fs::read_dir(directory)
-        .map_err(|e| AppError::ReadDir { path: directory.to_string(), source: e })?;
+fn load_svgs(directory: &str) -> Result<Vec<SvgSprite>, AppError> {
+    let entries = std::fs::read_dir(directory).map_err(|e| AppError::ReadDir {
+        path: directory.to_string(),
+        source: e,
+    })?;
 
     let mut sprites = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|e| AppError::ReadDir { path: directory.to_string(), source: e })?;
+        let entry = entry.map_err(|e| AppError::ReadDir {
+            path: directory.to_string(),
+            source: e,
+        })?;
         let path = entry.path();
         let file_name = entry.file_name();
-        let Ok(name_str) = file_name.into_string() else { continue };
+        let Ok(name_str) = file_name.into_string() else {
+            continue;
+        };
         if !name_str.ends_with(".svg") {
             continue;
         }
@@ -68,7 +76,7 @@ fn load_svgs<'b>(directory: &'b str) -> Result<Vec<SvgSprite>, AppError> {
             }
             Err(e) => {
                 let p = path.display().to_string();
-                return Err(AppError::ParseSvg { path: p, message: format!("{:?}", e) });
+                return Err(AppError::ParseSvg { path: p, message: format!("{e:?}") });
             }
         }
     }
@@ -77,11 +85,14 @@ fn load_svgs<'b>(directory: &'b str) -> Result<Vec<SvgSprite>, AppError> {
 
 /// Write the sprite to a file
 fn write_sprite(sprite: &str, file: &str) -> Result<(), AppError> {
-    std::fs::write(file, sprite).map_err(|e| AppError::WriteFile { path: file.to_string(), source: e })
+    std::fs::write(file, sprite).map_err(|e| AppError::WriteFile {
+        path: file.to_string(),
+        source: e,
+    })
 }
 
 /// Transfrom a group of svgs into a single svg as a string
-fn transform<'b>(svgs: Vec<SvgSprite>) -> String {
+fn transform(svgs: Vec<SvgSprite>) -> String {
     let mut result = svgs.iter().fold(
         String::from(r#"<svg xmlns="http://www.w3.org/2000/svg"><defs>"#),
         |mut acc, svg| {
@@ -111,8 +122,7 @@ fn parse_value<'s>(input: &mut &'s str) -> PResult<&'s str> {
 }
 
 fn kebab_alpha1<'s>(input: &mut &'s str) -> PResult<&'s str> {
-    let val = take_while(1.., ('a'..='z', 'A'..='Z', '-')).parse_next(input);
-    val
+    take_while(1.., ('a'..='z', 'A'..='Z', '-')).parse_next(input)
 }
 
 fn entry_tag<'s>(input: &mut &'s str) -> PResult<&'s str> {
