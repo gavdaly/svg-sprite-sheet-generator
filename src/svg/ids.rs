@@ -44,13 +44,13 @@ pub fn rewrite_ids_to_data_ids(s: &str) -> (String, Vec<String>) {
         if i + 4 <= bytes.len() && &bytes[i..i + 3] == b"id=" {
             // Ensure it's a standalone id attribute (not data-id)
             let prev = i.checked_sub(1).and_then(|j| bytes.get(j)).copied();
-            if let Some(p) = prev {
-                if is_name_char(p as char) {
-                    // Part of a larger name, copy one byte and continue
-                    out.push(bytes[i] as char);
-                    i += 1;
-                    continue;
-                }
+            if let Some(p) = prev
+                && is_name_char(p as char)
+            {
+                // Part of a larger name, copy one byte and continue
+                out.push(bytes[i] as char);
+                i += 1;
+                continue;
             }
             if i + 4 <= bytes.len() {
                 let quote = bytes[i + 3] as char;

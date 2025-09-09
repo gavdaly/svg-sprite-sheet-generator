@@ -494,11 +494,11 @@ fn preprocess_svg_content(input: &str) -> String {
                 s = &trimmed[end + 2..];
                 continue;
             }
-        } else if trimmed.starts_with("<!--") {
-            if let Some(end) = trimmed.find("-->") {
-                s = &trimmed[end + 3..];
-                continue;
-            }
+        } else if trimmed.starts_with("<!--")
+            && let Some(end) = trimmed.find("-->")
+        {
+            s = &trimmed[end + 3..];
+            continue;
         }
         // If we see neither, stop
         s = trimmed;
