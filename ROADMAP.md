@@ -49,4 +49,4 @@
 
 - [ ] CHANGELOG (Keep a Changelog) and CONTRIBUTING guide.
 - [ ] Installation instructions (brew/scoop/cargo) and troubleshooting.
-- [ ] Examples of using `<use>` with generated ids and best practices.
+- [x] Examples of using `<use>` with generated ids and best practices.
