@@ -1,9 +1,11 @@
 use winnow::{
-    ascii::multispace1,
+    ascii::{multispace0, multispace1},
     combinator::{preceded, separated, separated_pair, terminated},
     token::{take_until, take_while},
     PResult, Parser,
 };
+use crate::error::AppError;
+
 
 /// A struct to represent a SVG file
 struct SvgSprite {
@@ -30,54 +32,52 @@ impl SvgSprite {
 }
 
 /// Parse SVG file and return a SvgSprite struct
-pub fn process(directory: &str, file: &str) -> Result<(), ()> {
-    let Ok(svgs) = load_svgs(directory) else {
-        return Err(());
-    };
+pub fn process(directory: &str, file: &str) -> Result<(), AppError> {
+    let svgs = load_svgs(directory)?;
+    if svgs.is_empty() {
+        return Err(AppError::NoSvgFiles { path: directory.to_string() });
+    }
     let sprite = transform(svgs);
     write_sprite(&sprite, file)?;
     Ok(())
 }
 
 /// Loads all the svg files in the directory
-fn load_svgs<'b>(directory: &'b str) -> Result<Vec<SvgSprite>, String> {
-    let Ok(files) = std::fs::read_dir(directory) else {
-        return Err("Error Reading Directory".to_string());
-    };
+fn load_svgs<'b>(directory: &'b str) -> Result<Vec<SvgSprite>, AppError> {
+    let entries = std::fs::read_dir(directory)
+        .map_err(|e| AppError::ReadDir { path: directory.to_string(), source: e })?;
 
-    let files = files.filter_map(|f| {
-        let file = f.expect("to have the existing file");
-        let path = file.path();
-        let name = file
-            .file_name()
-            .into_string()
-            .expect("to have an existing filename");
-        if !name.ends_with(".svg") {
-            return None;
+    let mut sprites = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| AppError::ReadDir { path: directory.to_string(), source: e })?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let Ok(name_str) = file_name.into_string() else { continue };
+        if !name_str.ends_with(".svg") {
+            continue;
         }
-        let name = name.strip_suffix(".svg").unwrap().to_string();
-        Some((name, path))
-    });
-
-    let files = files
-        .map(|(name, path)| {
-            let Ok(a) = std::fs::read_to_string(path) else {
-                return Err("Error reading file".to_string());
-            };
-            let Ok((attributes, children)) = parse_svg.parse(&a) else {
-                return Err("Error parsing".to_string());
-            };
-            Ok(SvgSprite::new(name, attributes, children.to_string()))
-        })
-        .flatten()
-        .collect();
-    Ok(files)
+        let name = name_str.trim_end_matches(".svg").to_string();
+        let content = std::fs::read_to_string(&path).map_err(|e| AppError::ReadFile {
+            path: path.display().to_string(),
+            source: e,
+        })?;
+        let mut s = content.as_str();
+        match parse_svg.parse_next(&mut s) {
+            Ok((attributes, children)) => {
+                sprites.push(SvgSprite::new(name, attributes, children.to_string()));
+            }
+            Err(e) => {
+                let p = path.display().to_string();
+                return Err(AppError::ParseSvg { path: p, message: format!("{:?}", e) });
+            }
+        }
+    }
+    Ok(sprites)
 }
 
 /// Write the sprite to a file
-fn write_sprite(sprite: &str, file: &str) -> Result<(), ()> {
-    std::fs::write(file, sprite).unwrap();
-    Ok(())
+fn write_sprite(sprite: &str, file: &str) -> Result<(), AppError> {
+    std::fs::write(file, sprite).map_err(|e| AppError::WriteFile { path: file.to_string(), source: e })
 }
 
 /// Transfrom a group of svgs into a single svg as a string
@@ -120,13 +120,13 @@ fn entry_tag<'s>(input: &mut &'s str) -> PResult<&'s str> {
 }
 
 fn attributes<'s>(input: &mut &'s str) -> PResult<Vec<(&'s str, &'s str)>> {
-    separated(0.., parse_attribute, multispace1).parse_next(input)
+    preceded(multispace0, separated(0.., parse_attribute, multispace1)).parse_next(input)
 }
 
 fn parse_svg<'s>(input: &mut &'s str) -> PResult<(Vec<(&'s str, &'s str)>, &'s str)> {
     separated_pair(
         preceded(entry_tag, attributes),
-        '>',
+        preceded(multispace0, '>'),
         terminated(take_until(0.., "</svg>"), "</svg>"),
     )
     .parse_next(input)
