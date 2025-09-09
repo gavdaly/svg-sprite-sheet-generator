@@ -50,7 +50,9 @@ pub enum AppError {
         value: String,
     },
     /// Warnings were emitted and --fail-on-warn was set
-    WarningsPresent { count: usize },
+    WarningsPresent {
+        count: usize,
+    },
 }
 
 impl fmt::Display for AppError {

@@ -109,9 +109,13 @@ mod tests {
             if extra_ws { "  " } else { "" },
             width
         );
-        if use_commas && extra_ws { s.push(' '); }
+        if use_commas && extra_ws {
+            s.push(' ');
+        }
         s.push_str(sep);
-        if !use_commas && extra_ws { s.push_str("   "); }
+        if !use_commas && extra_ws {
+            s.push_str("   ");
+        }
         s.push_str(&height.to_string());
         s
     }
@@ -154,4 +158,3 @@ mod tests {
         }
     }
 }
-

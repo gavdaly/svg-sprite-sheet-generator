@@ -22,14 +22,24 @@ pub(crate) fn sanitize_id(raw: &str) -> String {
             prev_dash = true;
         }
     }
-    while out.starts_with('-') { out.remove(0); }
-    while out.ends_with('-') { out.pop(); }
-    while out.contains("--") { out = out.replace("--", "-"); }
+    while out.starts_with('-') {
+        out.remove(0);
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    while out.contains("--") {
+        out = out.replace("--", "-");
+    }
     out
 }
 
-fn is_valid_id_start(ch: char) -> bool { ch == '_' || ch.is_ascii_alphabetic() }
-fn is_valid_id_continue(ch: char) -> bool { ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' }
+fn is_valid_id_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+fn is_valid_id_continue(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-'
+}
 
 #[cfg(test)]
 mod tests {
@@ -62,4 +72,3 @@ mod tests {
         }
     }
 }
-

@@ -20,6 +20,7 @@ Options:
       --debounce-ms <N>     Debounce interval (ms) for event-based watch [default: 300]
       --quiet               Suppress non-error output
       --verbose             Increase verbosity
+      --log-level <LEVEL>   Global log level when RUST_LOG is unset [possible values: error, warn, info, debug, trace]
       --dry-run             Parse/validate without writing output
       --fail-on-warn        Treat warnings as errors
   -h, --help                Print help
@@ -55,6 +56,12 @@ Commands:
   - Example: `cargo run -- completions bash -o ./completions`
 - `man`: Generate a man page for the CLI.
   - Example: `cargo run -- man -o ./man`
+
+### Logging
+
+- Structured logs are emitted via `tracing`.
+- Use `RUST_LOG` to set module filters (e.g., `RUST_LOG=svg_sheet=debug,info`).
+- `--log-level` sets a global default when `RUST_LOG` is not set; defaults to `warn` (or `error` with `--quiet`, `info` with `--verbose`).
 
 ### Warnings
 

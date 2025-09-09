@@ -129,39 +129,43 @@ pub fn process_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(
         let mut out_attrs: Vec<(String, String)> = Vec::new();
         let mut root_id_raw: Option<&str> = None;
         let mut pending_viewbox: Option<String> = None;
-    let mut saw_width = false;
-    let mut saw_height = false;
-    let mut saw_viewbox = false;
-    for (k, v) in &attributes {
-        if *k == "id" {
-            root_id_raw = Some(v);
-        } else if *k == "width" || *k == "height" {
-            match normalize::normalize_length(v) {
-                Some(nv) => out_attrs.push(((*k).to_string(), nv)),
-                None => {
-                    return Err(AppError::InvalidDimension {
-                        path: path.display().to_string(),
-                        attr: (*k).to_string(),
-                        value: (*v).to_string(),
-                    });
+        let mut saw_width = false;
+        let mut saw_height = false;
+        let mut saw_viewbox = false;
+        for (k, v) in &attributes {
+            if *k == "id" {
+                root_id_raw = Some(v);
+            } else if *k == "width" || *k == "height" {
+                match normalize::normalize_length(v) {
+                    Some(nv) => out_attrs.push(((*k).to_string(), nv)),
+                    None => {
+                        return Err(AppError::InvalidDimension {
+                            path: path.display().to_string(),
+                            attr: (*k).to_string(),
+                            value: (*v).to_string(),
+                        });
+                    }
                 }
-            }
-            if *k == "width" { saw_width = true; } else { saw_height = true; }
-        } else if *k == "viewBox" {
-            match normalize::normalize_viewbox(v) {
-                Some(vb) => pending_viewbox = Some(vb),
-                None => {
-                    return Err(AppError::InvalidViewBox {
-                        path: path.display().to_string(),
-                        value: (*v).to_string(),
-                    });
+                if *k == "width" {
+                    saw_width = true;
+                } else {
+                    saw_height = true;
                 }
+            } else if *k == "viewBox" {
+                match normalize::normalize_viewbox(v) {
+                    Some(vb) => pending_viewbox = Some(vb),
+                    None => {
+                        return Err(AppError::InvalidViewBox {
+                            path: path.display().to_string(),
+                            value: (*v).to_string(),
+                        });
+                    }
+                }
+                saw_viewbox = true;
+            } else {
+                out_attrs.push(((*k).to_string(), (*v).to_string()));
             }
-            saw_viewbox = true;
-        } else {
-            out_attrs.push(((*k).to_string(), (*v).to_string()));
         }
-    }
 
         if let Some(idv) = root_id_raw {
             let sanitized = sanitize::sanitize_id(idv);
@@ -179,6 +183,7 @@ pub fn process_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(
             }
             // Warning: moved root id to data-id
             warn_count += 1;
+            tracing::warn!(path = %path.display(), original_id = %idv, sanitized_id = %sanitized, "Root <svg id> moved to data-id");
             out_attrs.push(("data-id".to_string(), sanitized));
         }
         if let Some(vb) = pending_viewbox {
@@ -199,9 +204,18 @@ pub fn process_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(
         }
 
         // Warnings for missing dims/viewBox
-        if !saw_width { warn_count += 1; }
-        if !saw_height { warn_count += 1; }
-        if !saw_viewbox { warn_count += 1; }
+        if !saw_width {
+            warn_count += 1;
+            tracing::warn!(path = %path.display(), file = %file_name, "Missing width on root <svg>");
+        }
+        if !saw_height {
+            warn_count += 1;
+            tracing::warn!(path = %path.display(), file = %file_name, "Missing height on root <svg>");
+        }
+        if !saw_viewbox {
+            warn_count += 1;
+            tracing::warn!(path = %path.display(), file = %file_name, "Missing viewBox on root <svg>");
+        }
 
         // Stream write one pattern element
         writer
@@ -246,22 +260,40 @@ pub fn watch_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(),
 
 pub fn watch_event(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppError> {
     if !opts.quiet {
-        println!("Watching '{directory}' -> '{file}' (event-based; Ctrl+C to stop)");
+        tracing::info!(
+            directory,
+            file,
+            mode = "event",
+            "Watching for changes (Ctrl+C to stop)"
+        );
     }
     use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::mpsc::channel;
 
     let (tx, rx) = channel::<notify::Result<Event>>();
-    let mut watcher = RecommendedWatcher::new(move |res| {
-        let _ = tx.send(res);
-    }, Config::default())
-    .map_err(|e| AppError::WriteFile { path: "watch".into(), source: std::io::Error::other(e.to_string()) })?;
+    let mut watcher = RecommendedWatcher::new(
+        move |res| {
+            let _ = tx.send(res);
+        },
+        Config::default(),
+    )
+    .map_err(|e| AppError::WriteFile {
+        path: "watch".into(),
+        source: std::io::Error::other(e.to_string()),
+    })?;
     watcher
         .watch(std::path::Path::new(directory), RecursiveMode::NonRecursive)
-        .map_err(|e| AppError::ReadDir { path: directory.into(), source: std::io::Error::other(e.to_string()) })?;
+        .map_err(|e| AppError::ReadDir {
+            path: directory.into(),
+            source: std::io::Error::other(e.to_string()),
+        })?;
 
     let mut cache: std::collections::HashMap<String, CacheEntry> = std::collections::HashMap::new();
-    let debounce = Duration::from_millis(if opts.debounce_ms == 0 { 1 } else { opts.debounce_ms });
+    let debounce = Duration::from_millis(if opts.debounce_ms == 0 {
+        1
+    } else {
+        opts.debounce_ms
+    });
     let mut last_trigger = SystemTime::now();
     let mut pending = false;
     loop {
@@ -271,14 +303,14 @@ pub fn watch_event(directory: &str, file: &str, opts: RunOpts) -> Result<(), App
                 let elapsed = last_trigger.elapsed().unwrap_or(Duration::ZERO);
                 if elapsed >= debounce {
                     if let Err(e) = rebuild_once(directory, file, &mut cache, opts) {
-                        eprintln!("{e}");
+                        tracing::error!(error = %e, "Rebuild failed");
                     }
                     last_trigger = SystemTime::now();
                     pending = false;
                 }
             }
             Ok(Err(e)) => {
-                eprintln!("watch error: {e}");
+                tracing::error!(error = %e, "Watch error");
             }
             Err(_disconnected) => break,
         }
@@ -286,7 +318,7 @@ pub fn watch_event(directory: &str, file: &str, opts: RunOpts) -> Result<(), App
         if pending {
             std::thread::sleep(debounce);
             if let Err(e) = rebuild_once(directory, file, &mut cache, opts) {
-                eprintln!("{e}");
+                tracing::error!(error = %e, "Rebuild failed");
             }
             last_trigger = SystemTime::now();
             pending = false;
@@ -298,7 +330,12 @@ pub fn watch_event(directory: &str, file: &str, opts: RunOpts) -> Result<(), App
 
 pub fn watch_poll(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppError> {
     if !opts.quiet {
-        println!("Watching '{directory}' -> '{file}' (poll; Ctrl+C to stop)");
+        tracing::info!(
+            directory,
+            file,
+            mode = "poll",
+            "Watching for changes (Ctrl+C to stop)"
+        );
     }
     let mut cache: std::collections::HashMap<String, CacheEntry> = std::collections::HashMap::new();
     let mut last_state: Option<u64> = None;
@@ -312,31 +349,46 @@ pub fn watch_poll(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppE
 
         // Collect current svg files
         let paths: Vec<std::path::PathBuf> = std::fs::read_dir(directory)
-            .map_err(|e| AppError::ReadDir { path: directory.to_string(), source: e })?
+            .map_err(|e| AppError::ReadDir {
+                path: directory.to_string(),
+                source: e,
+            })?
             .filter_map(|e| e.ok().map(|de| de.path()))
             .filter(|p| p.extension().is_some_and(|ext| ext == "svg"))
             .collect();
 
         if paths.is_empty() {
-            eprintln!("No svg files found in '{directory}'");
+            tracing::warn!(directory, "No SVG files found");
             std::thread::sleep(Duration::from_millis(500));
             continue;
         }
 
         // Remove deleted entries
-        let live: std::collections::HashSet<_> = paths.iter().map(|p| p.display().to_string()).collect();
+        let live: std::collections::HashSet<_> =
+            paths.iter().map(|p| p.display().to_string()).collect();
         cache.retain(|k, _| live.contains(k));
 
         // Update or add changed files
         for p in &paths {
-            let meta = match std::fs::metadata(p) { Ok(m)=>m, Err(_)=>continue };
+            let meta = match std::fs::metadata(p) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
             let mtime = meta.modified().unwrap_or(UNIX_EPOCH);
             let len = meta.len();
             let key = p.display().to_string();
-            let needs = match cache.get(&key) { Some(c)=> c.mtime!=mtime || c.len!=len, None=>true };
+            let needs = match cache.get(&key) {
+                Some(c) => c.mtime != mtime || c.len != len,
+                None => true,
+            };
             if needs {
                 match build_cache_entry(p) {
-                    Ok(mut ce) => { ce.mtime = mtime; ce.len = len; ce.path_str = key.clone(); cache.insert(key, ce); }
+                    Ok(mut ce) => {
+                        ce.mtime = mtime;
+                        ce.len = len;
+                        ce.path_str = key.clone();
+                        cache.insert(key, ce);
+                    }
                     Err(e) => {
                         eprintln!("Skip {}: {e}", p.display());
                         // skip writing this round
@@ -348,7 +400,8 @@ pub fn watch_poll(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppE
         }
 
         // Check global id collisions
-        let mut id_reg: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut id_reg: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         let mut collision = None;
         for entry in cache.values() {
             for cid in &entry.child_ids {
@@ -359,10 +412,12 @@ pub fn watch_poll(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppE
                     id_reg.insert(cid.clone(), entry.path_str.clone());
                 }
             }
-            if collision.is_some() { break; }
+            if collision.is_some() {
+                break;
+            }
         }
         if let Some((id, first, second)) = collision {
-            eprintln!("ID collision '{id}' between {first} and {second}");
+            tracing::error!(%id, first = %first, second = %second, "ID collision detected");
             std::thread::sleep(Duration::from_millis(500));
             continue;
         }
@@ -370,9 +425,11 @@ pub fn watch_poll(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppE
         // Write sprite from cache in sorted order
         if let Err(e) = write_sprite_from_cache(file, &cache, &paths, opts) {
             eprintln!("Write failed: {e}");
-            if let Some(src) = std::error::Error::source(&e) { eprintln!("Caused by: {src}"); }
+            if let Some(src) = std::error::Error::source(&e) {
+                eprintln!("Caused by: {src}");
+            }
         } else if !opts.quiet || opts.verbose {
-            println!("Rebuilt sprite at {:?}", SystemTime::now());
+            tracing::info!("Rebuilt sprite");
         }
         last_state = Some(state);
         std::thread::sleep(Duration::from_millis(500));
@@ -461,31 +518,49 @@ fn rebuild_once(
 ) -> Result<(), AppError> {
     // Collect current svg files
     let paths: Vec<std::path::PathBuf> = std::fs::read_dir(directory)
-        .map_err(|e| AppError::ReadDir { path: directory.to_string(), source: e })?
+        .map_err(|e| AppError::ReadDir {
+            path: directory.to_string(),
+            source: e,
+        })?
         .filter_map(|e| e.ok().map(|de| de.path()))
         .filter(|p| p.extension().is_some_and(|ext| ext == "svg"))
         .collect();
 
     if paths.is_empty() {
-        eprintln!("No svg files found in '{directory}'");
+        tracing::warn!(directory, "No SVG files found");
         return Ok(());
     }
 
     // Remove deleted entries
-    let live: std::collections::HashSet<_> = paths.iter().map(|p| p.display().to_string()).collect();
+    let live: std::collections::HashSet<_> =
+        paths.iter().map(|p| p.display().to_string()).collect();
     cache.retain(|k, _| live.contains(k));
 
     // Update or add changed files
     for p in &paths {
-        let meta = match std::fs::metadata(p) { Ok(m)=>m, Err(_)=>continue };
+        let meta = match std::fs::metadata(p) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
         let mtime = meta.modified().unwrap_or(UNIX_EPOCH);
         let len = meta.len();
         let key = p.display().to_string();
-        let needs = match cache.get(&key) { Some(c)=> c.mtime!=mtime || c.len!=len, None=>true };
+        let needs = match cache.get(&key) {
+            Some(c) => c.mtime != mtime || c.len != len,
+            None => true,
+        };
         if needs {
             match build_cache_entry(p) {
-                Ok(mut ce) => { ce.mtime = mtime; ce.len = len; ce.path_str = key.clone(); cache.insert(key, ce); }
-                Err(e) => { eprintln!("Skip {}: {e}", p.display()); return Ok(()); }
+                Ok(mut ce) => {
+                    ce.mtime = mtime;
+                    ce.len = len;
+                    ce.path_str = key.clone();
+                    cache.insert(key, ce);
+                }
+                Err(e) => {
+                    tracing::warn!(path = %p.display(), error = %e, "Skipping file due to error");
+                    return Ok(());
+                }
             }
         }
     }
@@ -495,7 +570,11 @@ fn rebuild_once(
     for entry in cache.values() {
         for cid in &entry.child_ids {
             if let Some(first) = id_reg.get(cid) {
-                return Err(AppError::IdCollision { id: cid.clone(), first_path: first.clone(), second_path: entry.path_str.clone() });
+                return Err(AppError::IdCollision {
+                    id: cid.clone(),
+                    first_path: first.clone(),
+                    second_path: entry.path_str.clone(),
+                });
             } else {
                 id_reg.insert(cid.clone(), entry.path_str.clone());
             }
@@ -509,15 +588,25 @@ fn build_cache_entry(path: &std::path::Path) -> Result<CacheEntry, AppError> {
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
-        .ok_or_else(|| AppError::ReadFile { path: path.display().to_string(), source: std::io::Error::other("invalid filename") })?
+        .ok_or_else(|| AppError::ReadFile {
+            path: path.display().to_string(),
+            source: std::io::Error::other("invalid filename"),
+        })?
         .to_string();
     let name = file_name.trim_end_matches(".svg").to_string();
-    let content = std::fs::read_to_string(path).map_err(|e| AppError::ReadFile { path: path.display().to_string(), source: e })?;
+    let content = std::fs::read_to_string(path).map_err(|e| AppError::ReadFile {
+        path: path.display().to_string(),
+        source: e,
+    })?;
     let pre = preprocess_svg_content(&content);
     let mut s = pre.as_str();
-    let (attributes, children) = parsing::parse_svg
-        .parse_next(&mut s)
-        .map_err(|e| AppError::ParseSvg { path: path.display().to_string(), message: format!("{e:?}") })?;
+    let (attributes, children) =
+        parsing::parse_svg
+            .parse_next(&mut s)
+            .map_err(|e| AppError::ParseSvg {
+                path: path.display().to_string(),
+                message: format!("{e:?}"),
+            })?;
 
     let mut out_attrs: Vec<(String, String)> = Vec::new();
     let mut root_id_raw: Option<&str> = None;
@@ -533,15 +622,26 @@ fn build_cache_entry(path: &std::path::Path) -> Result<CacheEntry, AppError> {
             match normalize::normalize_length(v) {
                 Some(nv) => out_attrs.push(((*k).to_string(), nv)),
                 None => {
-                    return Err(AppError::InvalidDimension { path: path.display().to_string(), attr: (*k).to_string(), value: (*v).to_string() });
+                    return Err(AppError::InvalidDimension {
+                        path: path.display().to_string(),
+                        attr: (*k).to_string(),
+                        value: (*v).to_string(),
+                    });
                 }
             }
-            if *k == "width" { saw_width = true; } else { saw_height = true; }
+            if *k == "width" {
+                saw_width = true;
+            } else {
+                saw_height = true;
+            }
         } else if *k == "viewBox" {
             match normalize::normalize_viewbox(v) {
                 Some(vb) => pending_viewbox = Some(vb),
                 None => {
-                    return Err(AppError::InvalidViewBox { path: path.display().to_string(), value: (*v).to_string() });
+                    return Err(AppError::InvalidViewBox {
+                        path: path.display().to_string(),
+                        value: (*v).to_string(),
+                    });
                 }
             }
             saw_viewbox = true;
@@ -552,22 +652,36 @@ fn build_cache_entry(path: &std::path::Path) -> Result<CacheEntry, AppError> {
     if let Some(idv) = root_id_raw {
         let sanitized = sanitize::sanitize_id(idv);
         if sanitized.is_empty() {
-            return Err(AppError::InvalidIdAfterSanitize { path: path.display().to_string(), original: idv.to_string() });
+            return Err(AppError::InvalidIdAfterSanitize {
+                path: path.display().to_string(),
+                original: idv.to_string(),
+            });
         }
         if ids::references_id(children, idv) {
-            return Err(AppError::RootIdReferenced { path: path.display().to_string(), id: idv.to_string() });
+            return Err(AppError::RootIdReferenced {
+                path: path.display().to_string(),
+                id: idv.to_string(),
+            });
         }
         warnings += 1;
         out_attrs.push(("data-id".to_string(), sanitized));
     }
-    if let Some(vb) = pending_viewbox { out_attrs.push(("viewBox".to_string(), vb)); }
+    if let Some(vb) = pending_viewbox {
+        out_attrs.push(("viewBox".to_string(), vb));
+    }
 
     let child_ids = ids::extract_ids(children);
 
     // Warnings for missing dims/viewBox
-    if !saw_width { warnings += 1; }
-    if !saw_height { warnings += 1; }
-    if !saw_viewbox { warnings += 1; }
+    if !saw_width {
+        warnings += 1;
+    }
+    if !saw_height {
+        warnings += 1;
+    }
+    if !saw_viewbox {
+        warnings += 1;
+    }
 
     Ok(CacheEntry {
         mtime: UNIX_EPOCH,
@@ -592,13 +706,19 @@ fn write_sprite_from_cache(
     let writer: Box<dyn std::io::Write> = if opts.dry_run {
         Box::new(std::io::BufWriter::new(std::io::sink()))
     } else {
-        let file_opt = std::fs::File::create(file).map_err(|e| AppError::WriteFile { path: file.to_string(), source: e })?;
+        let file_opt = std::fs::File::create(file).map_err(|e| AppError::WriteFile {
+            path: file.to_string(),
+            source: e,
+        })?;
         Box::new(std::io::BufWriter::new(file_opt))
     };
     let mut writer = writer;
     writer
         .write_all(b"<svg xmlns=\"http://www.w3.org/2000/svg\"><defs>")
-        .map_err(|e| AppError::WriteFile { path: file.to_string(), source: e })?;
+        .map_err(|e| AppError::WriteFile {
+            path: file.to_string(),
+            source: e,
+        })?;
 
     let mut warn_count = 0usize;
     for p in order {
@@ -611,15 +731,27 @@ fn write_sprite_from_cache(
                 .map(|(k, v)| format!(r#" {k}="{v}""#))
                 .collect::<String>();
             writer
-                .write_all(format!(r#"<pattern id="{}"{}>{}</pattern>"#, entry.name, attrs, entry.children).as_bytes())
-                .map_err(|e| AppError::WriteFile { path: file.to_string(), source: e })?;
+                .write_all(
+                    format!(
+                        r#"<pattern id="{}"{}>{}</pattern>"#,
+                        entry.name, attrs, entry.children
+                    )
+                    .as_bytes(),
+                )
+                .map_err(|e| AppError::WriteFile {
+                    path: file.to_string(),
+                    source: e,
+                })?;
         }
     }
 
     writer
         .write_all(b"</defs></svg>")
         .and_then(|_| writer.flush())
-        .map_err(|e| AppError::WriteFile { path: file.to_string(), source: e })?;
+        .map_err(|e| AppError::WriteFile {
+            path: file.to_string(),
+            source: e,
+        })?;
 
     if opts.fail_on_warn && warn_count > 0 {
         return Err(AppError::WarningsPresent { count: warn_count });
@@ -680,7 +812,7 @@ mod tests {
         let err = process_with_opts(
             tmp.path().to_str().unwrap(),
             &tmp.path().join("out.svg").display().to_string(),
-            RunOpts::default()
+            RunOpts::default(),
         )
         .expect_err("expected error");
         match err {
@@ -701,7 +833,12 @@ mod tests {
         .unwrap();
         fs::write(dir.join("b.svg"), "<svg id=\"b\"><g/></svg>").unwrap();
         let out = dir.join("sprite.svg");
-        process_with_opts(dir.to_str().unwrap(), out.to_str().unwrap(), RunOpts::default()).expect("build ok");
+        process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect("build ok");
         let sprite = fs::read_to_string(&out).expect("read sprite");
         assert!(sprite.contains("pattern id=\"a\""));
         assert!(sprite.contains("pattern id=\"b\""));
@@ -741,7 +878,12 @@ mod tests {
         )
         .unwrap();
         let out = dir.join("sprite.svg");
-        process_with_opts(dir.to_str().unwrap(), out.to_str().unwrap(), RunOpts::default()).expect("build ok");
+        process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect("build ok");
         let sprite = fs::read_to_string(&out).expect("read sprite");
         // id removed, data-id present with sanitized value "Logo"
         assert!(sprite.contains("data-id=\"Logo\""));
@@ -758,7 +900,12 @@ mod tests {
         )
         .unwrap();
         let out = dir.join("sprite.svg");
-        let err = process_with_opts(dir.to_str().unwrap(), out.to_str().unwrap(), RunOpts::default()).expect_err("should err");
+        let err = process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect_err("should err");
         match err {
             AppError::RootIdReferenced { .. } => {}
             other => panic!("unexpected error: {other}"),
@@ -772,7 +919,12 @@ mod tests {
         fs::write(dir.join("a.svg"), "<svg width='1'><g id=\"dup\"/></svg>").unwrap();
         fs::write(dir.join("b.svg"), "<svg width='1'><g id=\"dup\"/></svg>").unwrap();
         let out = dir.join("sprite.svg");
-        let err = process_with_opts(dir.to_str().unwrap(), out.to_str().unwrap(), RunOpts::default()).expect_err("should err");
+        let err = process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect_err("should err");
         match err {
             AppError::IdCollision { id, .. } => assert_eq!(id, "dup"),
             other => panic!("unexpected error: {other}"),
@@ -789,7 +941,12 @@ mod tests {
         );
         fs::write(dir.join("p.svg"), content).unwrap();
         let out = dir.join("sprite.svg");
-        process_with_opts(dir.to_str().unwrap(), out.to_str().unwrap(), RunOpts::default()).expect("build ok");
+        process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect("build ok");
         let sprite = fs::read_to_string(&out).unwrap();
         assert!(sprite.contains("pattern id=\"p\""));
     }
@@ -804,7 +961,12 @@ mod tests {
         )
         .unwrap();
         let out = dir.join("sprite.svg");
-        process_with_opts(dir.to_str().unwrap(), out.to_str().unwrap(), RunOpts::default()).expect("build ok");
+        process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect("build ok");
         let sprite = fs::read_to_string(&out).unwrap();
         assert!(sprite.contains("width=\"24\""));
         assert!(sprite.contains("height=\"24\""));
@@ -816,7 +978,12 @@ mod tests {
         let dir = tmp.path();
         fs::write(dir.join("s.svg"), "<svg width=\"0\" height=\"1\"></svg>").unwrap();
         let out = dir.join("sprite.svg");
-        let err = process_with_opts(dir.to_str().unwrap(), out.to_str().unwrap(), RunOpts::default()).expect_err("should err");
+        let err = process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect_err("should err");
         match err {
             AppError::InvalidDimension { attr, .. } => assert_eq!(attr, "width"),
             other => panic!("unexpected error: {other}"),
@@ -833,7 +1000,12 @@ mod tests {
         )
         .unwrap();
         let out = dir.join("sprite.svg");
-        process_with_opts(dir.to_str().unwrap(), out.to_str().unwrap(), RunOpts::default()).expect("build ok");
+        process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect("build ok");
         let sprite = fs::read_to_string(&out).unwrap();
         assert!(sprite.contains("viewBox=\"0 0 24 24\""));
     }
@@ -844,7 +1016,12 @@ mod tests {
         let dir = tmp.path();
         fs::write(dir.join("v.svg"), "<svg viewBox=\"0 0 0 24\"><g/></svg>").unwrap();
         let out = dir.join("sprite.svg");
-        let err = process_with_opts(dir.to_str().unwrap(), out.to_str().unwrap(), RunOpts::default()).expect_err("should err");
+        let err = process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect_err("should err");
         match err {
             AppError::InvalidViewBox { .. } => {}
             other => panic!("unexpected error: {other}"),

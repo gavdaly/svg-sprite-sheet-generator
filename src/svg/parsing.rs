@@ -1,8 +1,8 @@
 use winnow::{
+    PResult, Parser,
     ascii::{multispace0, multispace1},
     combinator::{preceded, terminated},
     token::{take_until, take_while},
-    PResult, Parser,
 };
 
 // Public within crate: used by svg::load_svgs

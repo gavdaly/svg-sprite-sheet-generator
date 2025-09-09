@@ -1,4 +1,4 @@
-use clap::{value_parser, ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum, value_parser};
 use std::path::PathBuf;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -30,6 +30,15 @@ pub enum Commands {
     },
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
 pub struct Args {
@@ -57,6 +66,11 @@ pub struct Args {
     /// Treat warnings as errors
     #[arg(long, action = ArgAction::SetTrue)]
     pub fail_on_warn: bool,
+
+    /// Global log level when RUST_LOG is not set
+    /// One of: error, warn, info, debug, trace
+    #[arg(long, value_enum)]
+    pub log_level: Option<LogLevel>,
 
     #[command(subcommand)]
     pub command: Option<Commands>,

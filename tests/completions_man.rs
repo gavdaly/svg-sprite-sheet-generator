@@ -6,12 +6,7 @@ fn generates_bash_completions_into_out_dir() {
     let out_dir = temp.path();
 
     let mut cmd = assert_cmd::Command::cargo_bin("svg_sheet").expect("binary");
-    cmd.args([
-        "completions",
-        "bash",
-        "-o",
-        out_dir.to_str().unwrap(),
-    ]);
+    cmd.args(["completions", "bash", "-o", out_dir.to_str().unwrap()]);
     cmd.assert().success();
 
     let bash_path = out_dir.join("svg_sheet.bash");

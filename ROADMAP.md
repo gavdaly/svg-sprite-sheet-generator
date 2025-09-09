@@ -21,7 +21,7 @@
 
 ## UX & Error Reporting
 
-- [ ] Structured logging via `tracing` with `--log-level` and env filter.
+- [x] Structured logging via `tracing` with `--log-level` and env filter.
 - [ ] Pretty diagnostics using `miette` with hints for common parse failures.
 - [ ] Progress bar for large directories; concise rebuild summaries.
 
