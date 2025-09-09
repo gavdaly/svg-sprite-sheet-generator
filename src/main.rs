@@ -98,7 +98,7 @@ fn generate_man(out_dir: Option<std::path::PathBuf>) -> Result<(), AppError> {
 }
 
 fn init_tracing(args: &Args) {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter, Registry};
+    use tracing_subscriber::{EnvFilter, Registry, fmt, prelude::*};
 
     // If RUST_LOG is set, prefer it; otherwise derive from CLI flags
     let env_filter = match EnvFilter::try_from_default_env() {

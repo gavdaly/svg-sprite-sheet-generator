@@ -10,7 +10,7 @@ fn generates_bash_completions_into_out_dir() {
     cmd.assert().success();
 
     let bash_path = out_dir.join("svg_sheet.bash");
-    assert!(bash_path.exists(), "expected {:?} to exist", bash_path);
+    assert!(bash_path.exists(), "expected {bash_path:?} to exist");
     let contents = fs::read(&bash_path).expect("read completion file");
     assert!(!contents.is_empty(), "completion file should be non-empty");
 
@@ -27,7 +27,7 @@ fn generates_man_page_into_out_dir() {
     cmd.assert().success();
 
     let man_path = out_dir.join("svg_sheet.1");
-    assert!(man_path.exists(), "expected {:?} to exist", man_path);
+    assert!(man_path.exists(), "expected {man_path:?} to exist");
     let contents = fs::read(&man_path).expect("read man file");
     assert!(!contents.is_empty(), "man file should be non-empty");
 
