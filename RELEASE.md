@@ -11,11 +11,11 @@
   - `cargo clippy --all-targets -- -D warnings`
   - `cargo test --all`
 
-## Build Binaries
+## Build Binaries (manual)
 - Optimize build: `cargo build --release` (artifacts in `target/release/`).
 - Optional strip: `strip target/release/svg_sheet` (platform permitting).
 
-## Package Artifacts
+## Package Artifacts (manual)
 - Linux/macOS tarball:
   - `tar -C target/release -czf svg_sheet-$VERSION-$TARGET.tar.gz svg_sheet`
 - Windows zip:
@@ -23,10 +23,19 @@
 - Checksums:
   - `shasum -a 256 svg_sheet-* > SHA256SUMS.txt` (use `sha256sum` on Linux).
 
-## Tag and Release
+## Tag and Release (automated)
+There is a GitHub Actions workflow that builds and uploads release artifacts and a checksum file when a SemVer tag is pushed (e.g., `v1.2.3`).
+
+- Bump version and tag (using cargo-release recommended):
+  - `cargo install cargo-release` (first time only)
+  - `cargo release <level-or-version> --execute` (e.g., `cargo release minor --execute`)
+    - Creates commit, tag `vX.Y.Z`, and pushes.
+- CI builds artifacts for Linux, macOS, and Windows, computes `SHA256SUMS.txt`, and attaches them to the GitHub Release.
+
+Manual alternative:
 - Commit version bump: `git add Cargo.toml Cargo.lock && git commit -m "chore(release): v$VERSION"`.
 - Create tag: `git tag -a v$VERSION -m "Release v$VERSION"` and `git push --follow-tags`.
-- Create a GitHub Release for `v$VERSION` and attach the packaged artifacts and `SHA256SUMS.txt`.
+- CI will detect the tag and produce the Release with artifacts.
 
 ## crates.io (optional)
 - Ensure `Cargo.toml` has complete package metadata (description, repository, license, keywords, categories, readme).
@@ -45,4 +54,3 @@
 ## Verify
 - Run `svg_sheet -V` from each artifact to confirm version.
 - Smoke test: run against a small `svgs/` folder and confirm output.
-

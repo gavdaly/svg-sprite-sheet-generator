@@ -41,7 +41,7 @@
 
 ## Packaging & Release
 
-- [ ] Automate releases with `cargo-release` or `cargo-dist` (artifacts + checksums).
+- [x] Automate releases with `cargo-release` or `cargo-dist` (artifacts + checksums).
 - [x] Publish completions and man page with releases; attach SBOM.
 - [ ] Add formulas/manifests: Homebrew tap, Scoop bucket, Nix flake, winget.
 

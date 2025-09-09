@@ -1,0 +1,15 @@
+[release]
+# Tag format like v1.2.3
+tag-prefix = "v"
+tag-name = "v{{version}}"
+push = true
+sign-tag = false
+sign-commit = false
+
+# Commit messages
+pre-release-commit-message = "chore(release): v{{version}}"
+post-release-commit-message = "chore: start next development iteration {{next_version}}"
+
+# Allow running from a clean tree only
+allow-branch = ["main", "master"]
+
