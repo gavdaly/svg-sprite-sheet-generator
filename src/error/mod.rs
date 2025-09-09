@@ -106,3 +106,87 @@ impl StdError for AppError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_read_write_errors() {
+        let e = AppError::ReadDir {
+            path: "/x".into(),
+            source: std::io::Error::other("boom"),
+        };
+        let s = e.to_string();
+        assert!(s.contains("failed to read directory"));
+
+        let e = AppError::ReadFile {
+            path: "f.svg".into(),
+            source: std::io::Error::other("boom"),
+        };
+        let s = e.to_string();
+        assert!(s.contains("failed to read file"));
+
+        let e = AppError::WriteFile {
+            path: "out.svg".into(),
+            source: std::io::Error::other("boom"),
+        };
+        let s = e.to_string();
+        assert!(s.contains("failed to write file"));
+    }
+
+    #[test]
+    fn display_parse_and_no_svg() {
+        let e = AppError::ParseSvg {
+            path: "p.svg".into(),
+            message: "bad".into(),
+        };
+        let s = e.to_string();
+        assert!(s.contains("failed to parse svg"));
+
+        let e = AppError::NoSvgFiles { path: "dir".into() };
+        let s = e.to_string();
+        assert!(s.contains("no SVG files"));
+    }
+
+    #[test]
+    fn display_id_related() {
+        let e = AppError::IdCollision {
+            id: "dup".into(),
+            first_path: "a".into(),
+            second_path: "b".into(),
+        };
+        assert!(e.to_string().contains("duplicate id"));
+
+        let e = AppError::RootIdReferenced {
+            path: "p.svg".into(),
+            id: "root".into(),
+        };
+        assert!(e.to_string().contains("root <svg> id"));
+
+        let e = AppError::InvalidIdAfterSanitize {
+            path: "p.svg".into(),
+            original: "💥".into(),
+        };
+        assert!(e.to_string().contains("empty after sanitization"));
+    }
+
+    #[test]
+    fn display_invalid_attrs_and_warnings() {
+        let e = AppError::InvalidDimension {
+            path: "p.svg".into(),
+            attr: "width".into(),
+            value: "0".into(),
+        };
+        assert!(e.to_string().contains("invalid width='0'"));
+
+        let e = AppError::InvalidViewBox {
+            path: "p.svg".into(),
+            value: "0 0 0 0".into(),
+        };
+        assert!(e.to_string().contains("invalid viewBox"));
+
+        let e = AppError::WarningsPresent { count: 3 };
+        assert!(e.to_string().contains("aborting due to 3 warning(s)"));
+    }
+}

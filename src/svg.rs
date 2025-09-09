@@ -1020,6 +1020,143 @@ mod tests {
     }
 
     #[test]
+    fn root_id_sanitizes_to_empty_causes_error() {
+        let tmp = TempDir::new("svg_bad_root_id");
+        let dir = tmp.path();
+        // Root id that sanitizes to empty (no valid start/continue chars)
+        std::fs::write(
+            dir.join("bad.svg"),
+            "<svg id=\"💥\" width=\"1\" height=\"1\"></svg>",
+        )
+        .unwrap();
+        let out = dir.join("sprite.svg");
+        let err = process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect_err("expected invalid id after sanitize error");
+        matches!(err, AppError::InvalidIdAfterSanitize { .. });
+    }
+
+    #[test]
+    fn warnings_allowed_without_fail_on_warn() {
+        let tmp = TempDir::new("svg_warn_ok");
+        let dir = tmp.path();
+        // Missing width/height/viewBox emits warnings but should still succeed when not failing on warn
+        std::fs::write(dir.join("w.svg"), "<svg ><g/></svg>").unwrap();
+        let out = dir.join("sprite.svg");
+        process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect("build should succeed despite warnings");
+        let sprite = std::fs::read_to_string(out).expect("sprite exists");
+        assert!(sprite.contains("<svg"));
+    }
+
+    #[test]
+    fn process_nonexistent_directory_returns_read_dir_error() {
+        let tmp = TempDir::new("svg_bad_dir");
+        let out = tmp.path().join("out.svg");
+        let err = process_with_opts(
+            tmp.path().join("does_not_exist").to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect_err("expected ReadDir error");
+        matches!(err, AppError::ReadDir { .. });
+    }
+
+    #[test]
+    fn process_invalid_svg_parse_error() {
+        let tmp = TempDir::new("svg_bad_parse");
+        let dir = tmp.path();
+        // Invalid content (not an <svg> element)
+        fs::write(dir.join("bad.svg"), "not-svg").unwrap();
+        let out = dir.join("sprite.svg");
+        let err = process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect_err("expected parse error");
+        matches!(err, AppError::ParseSvg { .. });
+    }
+
+    #[test]
+    fn process_fail_on_warn_returns_error() {
+        let tmp = TempDir::new("svg_fail_on_warn");
+        let dir = tmp.path();
+        // Missing width/height/viewBox -> warnings
+        fs::write(dir.join("warn.svg"), "<svg><g/></svg>").unwrap();
+        let out = dir.join("sprite.svg");
+        let err = process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts {
+                fail_on_warn: true,
+                ..Default::default()
+            },
+        )
+        .expect_err("expected warnings present error");
+        matches!(err, AppError::WarningsPresent { .. });
+    }
+
+    #[test]
+    fn process_write_file_error_when_output_is_directory() {
+        let tmp = TempDir::new("svg_write_dir");
+        let dir = tmp.path();
+        fs::write(dir.join("a.svg"), "<svg width=\"1\" height=\"1\"/>").unwrap();
+        // Attempt to create an output at the directory path -> should fail
+        let err = process_with_opts(
+            dir.to_str().unwrap(),
+            dir.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect_err("expected write file error");
+        matches!(err, AppError::WriteFile { .. });
+    }
+
+    #[test]
+    fn rebuild_once_duplicate_child_ids_causes_id_collision() {
+        let tmp = TempDir::new("svg_id_collision");
+        let dir = tmp.path();
+        fs::write(
+            dir.join("a.svg"),
+            "<svg width=\"1\" height=\"1\"><g id=\"dup\"/></svg>",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("b.svg"),
+            "<svg width=\"1\" height=\"1\"><g id=\"dup\"/></svg>",
+        )
+        .unwrap();
+        let mut cache: std::collections::HashMap<String, CacheEntry> =
+            std::collections::HashMap::new();
+        let err = super::rebuild_once(
+            dir.to_str().unwrap(),
+            &dir.join("sprite.svg").to_string_lossy(),
+            &mut cache,
+            RunOpts {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .expect_err("expected id collision error");
+        matches!(err, AppError::IdCollision { .. });
+    }
+
+    #[test]
+    fn dir_state_hash_nonexistent_dir_errors() {
+        let tmp = TempDir::new("svg_hash_bad_dir");
+        let bad = tmp.path().join("missing");
+        let err = super::dir_state_hash(bad.to_str().unwrap()).expect_err("expected error");
+        matches!(err, AppError::ReadDir { .. });
+    }
+
+    #[test]
     fn rejects_invalid_viewbox_dims() {
         let tmp = TempDir::new("svg_viewbox_reject");
         let dir = tmp.path();
@@ -1064,4 +1201,104 @@ mod tests {
     }
 
     // Property tests for ids::references_id live in svg::ids
+
+    #[test]
+    fn process_preserves_custom_and_boolean_attributes() {
+        let tmp = TempDir::new("svg_attrs_preserve");
+        let dir = tmp.path();
+        std::fs::write(
+            dir.join("c.svg"),
+            "<svg width=\"1\" height=\"1\" focusable fill=\"#000\"><g/></svg>",
+        )
+        .unwrap();
+        let out = dir.join("sprite.svg");
+        process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect("build ok");
+        let sprite = std::fs::read_to_string(out).unwrap();
+        assert!(sprite.contains("pattern id=\"c\""));
+        assert!(sprite.contains("fill=\"#000\""));
+        assert!(sprite.contains("focusable=\"focusable\""));
+    }
+
+    #[test]
+    fn process_ignores_output_basename_input() {
+        let tmp = TempDir::new("svg_ignore_out_basename");
+        let dir = tmp.path();
+        // An input file named the same as the output should be ignored
+        std::fs::write(
+            dir.join("sprite.svg"),
+            "<svg width=\"1\" height=\"1\"></svg>",
+        )
+        .unwrap();
+        std::fs::write(dir.join("a.svg"), "<svg width=\"1\" height=\"1\"></svg>").unwrap();
+        let out = dir.join("sprite.svg");
+        process_with_opts(
+            dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            RunOpts::default(),
+        )
+        .expect("build ok");
+        let sprite = std::fs::read_to_string(out).unwrap();
+        assert!(sprite.contains("pattern id=\"a\""));
+        assert!(!sprite.contains("pattern id=\"sprite\""));
+    }
+
+    #[test]
+    fn rebuild_once_error_skips_write() {
+        let tmp = TempDir::new("svg_rebuild_skip");
+        let dir = tmp.path();
+        std::fs::write(dir.join("bad.svg"), "<svg width=\"0\" height=\"1\"></svg>").unwrap();
+        let mut cache: std::collections::HashMap<String, CacheEntry> =
+            std::collections::HashMap::new();
+        let out_path = dir.join("sprite.svg");
+        super::rebuild_once(
+            dir.to_str().unwrap(),
+            &out_path.to_string_lossy(),
+            &mut cache,
+            RunOpts {
+                dry_run: false,
+                ..Default::default()
+            },
+        )
+        .expect("rebuild returns ok when skipping");
+        assert!(!out_path.exists(), "no sprite should be written on skip");
+    }
+
+    #[test]
+    fn write_sprite_from_cache_respects_fail_on_warn() {
+        let tmp = TempDir::new("svg_write_warn");
+        let dir = tmp.path();
+        std::fs::write(dir.join("w.svg"), "<svg ><g/></svg>").unwrap();
+        let entry = build_cache_entry(&dir.join("w.svg")).expect("entry");
+        assert!(entry.warnings > 0);
+        let mut cache: std::collections::HashMap<String, CacheEntry> =
+            std::collections::HashMap::new();
+        cache.insert(dir.join("w.svg").display().to_string(), entry);
+        let order = vec![dir.join("w.svg")];
+        let err = write_sprite_from_cache(
+            &dir.join("out.svg").to_string_lossy(),
+            &cache,
+            &order,
+            RunOpts {
+                fail_on_warn: true,
+                ..Default::default()
+            },
+        )
+        .expect_err("expected warnings present");
+        matches!(err, AppError::WarningsPresent { .. });
+    }
+
+    #[test]
+    fn dir_state_hash_ignores_non_svg_changes() {
+        let tmp = TempDir::new("svg_hash_ignore");
+        let dir = tmp.path();
+        let h1 = super::dir_state_hash(dir.to_str().unwrap()).expect("hash");
+        std::fs::write(dir.join("note.txt"), "hello").unwrap();
+        let h2 = super::dir_state_hash(dir.to_str().unwrap()).expect("hash2");
+        assert_eq!(h1, h2, "non-svg changes should not affect dir_state_hash");
+    }
 }
