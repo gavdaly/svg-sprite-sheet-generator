@@ -14,6 +14,13 @@
 - `cargo fmt` — Format code with `rustfmt`.
 - `cargo clippy -- -D warnings` — Lint and treat warnings as errors.
 
+## Release & Packaging
+- Version using SemVer; bump `Cargo.toml` and tag `vX.Y.Z`.
+- Pre‑flight: `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test`.
+- Build: `cargo build --release`; artifacts in `target/release/`.
+- Package tar/zip and generate SHA256 checksums; see `RELEASE.md`.
+- Create annotated tag and GitHub Release; optionally publish to crates.io.
+
 ## Coding Style & Naming Conventions
 - Rust 2021 edition; use `rustfmt` defaults (4‑space indent).
 - Names: modules/files `snake_case`, functions `snake_case`, types/enums `CamelCase`.

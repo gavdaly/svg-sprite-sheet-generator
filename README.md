@@ -40,6 +40,11 @@ Commands:
 - Lint: `cargo clippy -- -D warnings`
 - Tests: `cargo test`
 
+## Releases
+- Follow the steps in `RELEASE.md` to version, build, package, and publish.
+- Quick build: `cargo build --release` (artifacts in `target/release/`).
+- Tag format: `vMAJOR.MINOR.PATCH` (e.g., `v1.2.3`).
+
 ## Notes
 - Generated files and `svgs/` are ignored by VCS (see `.gitignore`).
 - Avoid placing non-SVG files in the input directory.
