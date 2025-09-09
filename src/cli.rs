@@ -76,10 +76,30 @@ pub struct Args {
     pub command: Option<Commands>,
 }
 
+/// Parse CLI arguments from the process arguments using clap.
+///
+/// Example (constructing `Args` directly for testing):
+/// ```
+/// use svg_sheet::cli::Args;
+/// use clap::Parser;
+/// let args = Args::try_parse_from([
+///     "svg_sheet", "-d", "svgs", "-f", "sprite.svg", "build"
+/// ]).unwrap();
+/// assert_eq!(args.directory, "svgs");
+/// assert_eq!(args.file, "sprite.svg");
+/// ```
 pub fn parse() -> Args {
     Args::parse()
 }
 
+/// Build the clap `Command` for this CLI (useful for completions/manpages).
+///
+/// Example: render short help text
+/// ```
+/// let mut cmd = svg_sheet::cli::command();
+/// let help = cmd.render_help().to_string();
+/// assert!(!help.is_empty());
+/// ```
 pub fn command() -> clap::Command {
     Args::command()
 }

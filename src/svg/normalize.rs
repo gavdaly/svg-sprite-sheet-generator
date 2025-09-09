@@ -1,8 +1,13 @@
-// Normalization utilities for lengths and viewBox values
+//! Normalization utilities for lengths and viewBox values.
 
-// Parse and normalize positive length values for width/height.
-// Accepts unitless or 'px' suffix. Returns normalized string (e.g., "24").
-pub(crate) fn normalize_length(v: &str) -> Option<String> {
+/// Parse and normalize positive length values for width/height.
+/// Accepts unitless or 'px' suffix. Returns normalized string (e.g., "24").
+///
+/// Example:
+/// ```
+/// assert_eq!(svg_sheet::svg::normalize::normalize_length("24px"), Some("24".into()));
+/// ```
+pub fn normalize_length(v: &str) -> Option<String> {
     let t = v.trim();
     let num = if let Some(stripped) = t.strip_suffix("px") {
         stripped.trim()
@@ -20,7 +25,8 @@ pub(crate) fn normalize_length(v: &str) -> Option<String> {
     Some(normalize_number(val))
 }
 
-pub(crate) fn normalize_number(n: f64) -> String {
+/// Canonicalize a floating number into an integer string when possible.
+pub fn normalize_number(n: f64) -> String {
     if (n.fract()).abs() < f64::EPSILON {
         format!("{n:.0}")
     } else {
@@ -28,9 +34,17 @@ pub(crate) fn normalize_number(n: f64) -> String {
     }
 }
 
-// Normalize viewBox into four numbers separated by single spaces.
-// Accept commas and/or whitespace as separators. Require width/height > 0.
-pub(crate) fn normalize_viewbox(v: &str) -> Option<String> {
+/// Normalize `viewBox` into four numbers separated by single spaces.
+/// Accepts commas and/or whitespace as separators. Requires width/height > 0.
+///
+/// Example:
+/// ```
+/// assert_eq!(
+///     svg_sheet::svg::normalize::normalize_viewbox("0,0,24,24"),
+///     Some("0 0 24 24".into())
+/// );
+/// ```
+pub fn normalize_viewbox(v: &str) -> Option<String> {
     let replaced = v.replace(',', " ");
     let parts: Vec<&str> = replaced.split_whitespace().collect();
     if parts.len() != 4 {

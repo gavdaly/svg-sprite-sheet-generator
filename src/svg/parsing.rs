@@ -5,7 +5,8 @@ use winnow::{
     token::{take_until, take_while},
 };
 
-// Public within crate: used by svg::load_svgs
+/// Parse an `<svg>` element, returning a vector of `(key, value)` attributes and the inner children string.
+/// Public within the crate.
 pub(crate) fn parse_svg<'s>(input: &mut &'s str) -> PResult<(Vec<(&'s str, &'s str)>, &'s str)> {
     entry_tag.parse_next(input)?;
     let attrs = attributes.parse_next(input)?;
@@ -14,7 +15,7 @@ pub(crate) fn parse_svg<'s>(input: &mut &'s str) -> PResult<(Vec<(&'s str, &'s s
     Ok((attrs, children))
 }
 
-// Attribute list: zero or more attributes separated by whitespace
+/// Parse zero or more attributes separated by whitespace from the `<svg>` start tag.
 fn attributes<'s>(input: &mut &'s str) -> PResult<Vec<(&'s str, &'s str)>> {
     multispace0.parse_next(input)?;
     let mut out: Vec<(&'s str, &'s str)> = Vec::new();
@@ -34,7 +35,7 @@ fn attributes<'s>(input: &mut &'s str) -> PResult<Vec<(&'s str, &'s str)>> {
     Ok(out)
 }
 
-// Parse an attribute in two forms: key[ws]?=[ws]?value or boolean key
+/// Parse a single attribute in two forms: `key[ws]?=[ws]?value` or boolean `key`.
 fn parse_attribute<'s>(input: &mut &'s str) -> PResult<(&'s str, &'s str)> {
     let key = kebab_alpha1.parse_next(input)?;
     let mut lookahead = *input;
@@ -47,6 +48,7 @@ fn parse_attribute<'s>(input: &mut &'s str) -> PResult<(&'s str, &'s str)> {
     }
 }
 
+/// Parse a quoted attribute value, supporting both `"value"` and `'value'`.
 fn parse_value<'s>(input: &mut &'s str) -> PResult<&'s str> {
     if input.starts_with('"') {
         return preceded('"', terminated(take_until(0.., '"'), '"')).parse_next(input);
@@ -57,6 +59,7 @@ fn parse_value<'s>(input: &mut &'s str) -> PResult<&'s str> {
     preceded('"', terminated(take_until(0.., '"'), '"')).parse_next(input)
 }
 
+/// Parse an equals sign surrounded by optional whitespace.
 fn parse_eq_ws(input: &mut &str) -> PResult<char> {
     multispace0.parse_next(input)?;
     let eq = '='.parse_next(input)?;
@@ -64,20 +67,24 @@ fn parse_eq_ws(input: &mut &str) -> PResult<char> {
     Ok(eq)
 }
 
+/// Parse at least one name character suitable for attribute keys (kebab/snake allowed).
 fn kebab_alpha1<'s>(input: &mut &'s str) -> PResult<&'s str> {
     take_while(1.., ('a'..='z', 'A'..='Z', '0'..='9', '-', '_', ':')).parse_next(input)
 }
 
+/// Parse the `<svg` entry tag and at least one following whitespace character.
 fn entry_tag<'s>(input: &mut &'s str) -> PResult<&'s str> {
     terminated("<svg", multispace1).parse_next(input)
 }
 
 #[cfg(test)]
+/// Test helper: parse a '>' optionally preceded by whitespace.
 fn parse_gt(input: &mut &str) -> PResult<char> {
     preceded(multispace0, '>').parse_next(input)
 }
 
 #[cfg(test)]
+/// Test helper: parse everything until and including the closing `</svg>`.
 fn parse_children<'a>(input: &'a mut &'a str) -> PResult<&'a str> {
     terminated(take_until(0.., "</svg>"), "</svg>").parse_next(input)
 }

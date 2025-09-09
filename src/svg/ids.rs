@@ -1,7 +1,14 @@
-// ID extraction and reference detection utilities
+//! ID extraction and reference detection utilities.
 
-// Detect simple references to an id within content: href="#id", xlink:href="#id", or url(#id)
-pub(crate) fn references_id(content: &str, id: &str) -> bool {
+/// Detect simple references to an id within content: `href="#id"`, `xlink:href="#id"`, or `url(#id)`.
+///
+/// Example:
+/// ```
+/// let s = "<use href=\"#x\"/><rect fill=\"url(#x)\"/>";
+/// assert!(svg_sheet::svg::ids::references_id(s, "x"));
+/// assert!(!svg_sheet::svg::ids::references_id(s, "y"));
+/// ```
+pub fn references_id(content: &str, id: &str) -> bool {
     content.contains(&format!("href=\"#{id}\""))
         || content.contains(&format!("xlink:href=\"#{id}\""))
         || content.contains(&format!("href='#{id}'"))
@@ -9,15 +16,24 @@ pub(crate) fn references_id(content: &str, id: &str) -> bool {
         || content.contains(&format!("url(#{id})"))
 }
 
+/// Return whether a character is valid in an attribute name context.
 fn is_name_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == ':'
 }
 
-// Rewrite all internal id attributes to data-id attributes.
-// Ensures there are no duplicate data-id values within the same content by
-// appending a numeric suffix (-2, -3, ...) to subsequent duplicates.
-// Returns the rewritten content and the list of resulting data-id values.
-pub(crate) fn rewrite_ids_to_data_ids(s: &str) -> (String, Vec<String>) {
+/// Rewrite all internal `id` attributes to `data-id` attributes.
+/// Ensures there are no duplicate `data-id` values within the same content by
+/// appending a numeric suffix (`-2`, `-3`, ...) to subsequent duplicates.
+/// Returns the rewritten content and the list of resulting `data-id` values.
+///
+/// Example:
+/// ```
+/// let (out, ids) = svg_sheet::svg::ids::rewrite_ids_to_data_ids("<g id='a'/><g id=\"a\"/>");
+/// assert!(out.contains("data-id='a'"));
+/// assert!(out.contains("data-id=\"a-2\""));
+/// assert_eq!(ids, vec!["a".to_string(), "a-2".to_string()]);
+/// ```
+pub fn rewrite_ids_to_data_ids(s: &str) -> (String, Vec<String>) {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut data_ids = Vec::new();

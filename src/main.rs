@@ -6,6 +6,7 @@ use crate::error::AppError;
 use cli::{Args, Commands, LogLevel, Shell};
 use std::error::Error as _;
 
+/// Program entry point. Dispatches CLI commands and prints user-friendly errors.
 fn main() {
     let args = cli::parse();
     init_tracing(&args);
@@ -36,6 +37,7 @@ fn main() {
     }
 }
 
+/// Convert parsed CLI `Args` into `svg::RunOpts` used by core routines.
 fn to_run_opts(args: &Args) -> svg::RunOpts {
     svg::RunOpts {
         quiet: args.quiet,
@@ -47,6 +49,7 @@ fn to_run_opts(args: &Args) -> svg::RunOpts {
     }
 }
 
+/// Generate shell completion files into an output directory.
 fn generate_completions(shell: Shell, out_dir: Option<std::path::PathBuf>) -> Result<(), AppError> {
     use clap_complete::{Shell as ClapShell, generate_to};
     let mut cmd = cli::command();
@@ -75,6 +78,7 @@ fn generate_completions(shell: Shell, out_dir: Option<std::path::PathBuf>) -> Re
     Ok(())
 }
 
+/// Generate a man page for the CLI into an output directory.
 fn generate_man(out_dir: Option<std::path::PathBuf>) -> Result<(), AppError> {
     let cmd = cli::command();
     let man = clap_mangen::Man::new(cmd);
@@ -97,6 +101,7 @@ fn generate_man(out_dir: Option<std::path::PathBuf>) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Initialize tracing subscriber based on environment and CLI verbosity flags.
 fn init_tracing(args: &Args) {
     use tracing_subscriber::{EnvFilter, Registry, fmt, prelude::*};
 

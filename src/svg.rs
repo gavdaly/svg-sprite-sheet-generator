@@ -4,10 +4,10 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use winnow::Parser;
 
-mod ids;
-mod normalize;
+pub mod ids;
+pub mod normalize;
 mod parsing;
-mod sanitize;
+pub mod sanitize;
 mod transform;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -59,7 +59,21 @@ impl SvgSprite {
     }
 }
 
-/// Parse input svgs and stream-write the sprite to the output file to minimize memory usage.
+/// Parse input SVGs in `directory` and stream-write a sprite to `file`.
+/// Minimizes memory usage by writing patterns as they are parsed.
+///
+/// Example (dry run):
+/// ```
+/// use std::fs;
+/// let tmp = std::env::temp_dir().join("svg_sheet_proc");
+/// let _ = fs::remove_dir_all(&tmp);
+/// fs::create_dir_all(&tmp).unwrap();
+/// fs::write(tmp.join("a.svg"), "<svg width='1' height='1'><g/></svg>").unwrap();
+/// let opts = svg_sheet::svg::RunOpts { dry_run: true, ..Default::default() };
+/// let out = tmp.join("sprite.svg");
+/// svg_sheet::svg::process_with_opts(tmp.to_str().unwrap(), out.to_str().unwrap(), opts).unwrap();
+/// let _ = fs::remove_dir_all(tmp);
+/// ```
 pub fn process_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppError> {
     // Collect candidate SVG file entries first to detect empty inputs without creating output.
     let out_basename = std::path::Path::new(file)
@@ -244,6 +258,11 @@ pub fn process_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(
 }
 
 /// Watch a directory for changes and rebuild the sprite when inputs change.
+///
+/// Example:
+/// ```no_run
+/// svg_sheet::svg::watch_with_opts("svgs", "sprite.svg", Default::default()).unwrap();
+/// ```
 pub fn watch_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppError> {
     if opts.poll {
         return watch_poll(directory, file, opts);
@@ -251,6 +270,12 @@ pub fn watch_with_opts(directory: &str, file: &str, opts: RunOpts) -> Result<(),
     watch_event(directory, file, opts)
 }
 
+/// Event-based watcher using native file notifications.
+///
+/// Example:
+/// ```no_run
+/// svg_sheet::svg::watch_event("svgs", "sprite.svg", Default::default()).unwrap();
+/// ```
 pub fn watch_event(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppError> {
     if !opts.quiet {
         tracing::info!(
@@ -321,6 +346,12 @@ pub fn watch_event(directory: &str, file: &str, opts: RunOpts) -> Result<(), App
     Ok(())
 }
 
+/// Polling-based watcher as a fallback for environments without event support.
+///
+/// Example:
+/// ```no_run
+/// svg_sheet::svg::watch_poll("svgs", "sprite.svg", Default::default()).unwrap();
+/// ```
 pub fn watch_poll(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppError> {
     if !opts.quiet {
         tracing::info!(
@@ -414,6 +445,8 @@ pub fn watch_poll(directory: &str, file: &str, opts: RunOpts) -> Result<(), AppE
     }
 }
 
+/// Compute a stable hash of the directory state considering `.svg` file names,
+/// sizes, and modification times.
 fn dir_state_hash(directory: &str) -> Result<u64, AppError> {
     let entries = std::fs::read_dir(directory).map_err(|e| AppError::ReadDir {
         path: directory.to_string(),
@@ -441,6 +474,7 @@ fn dir_state_hash(directory: &str) -> Result<u64, AppError> {
     Ok(hasher.finish())
 }
 
+/// Hash a `SystemTime` into the provided hasher using seconds and nanos.
 fn hash_time(t: &SystemTime, hasher: &mut DefaultHasher) {
     if let Ok(dur) = t.duration_since(UNIX_EPOCH) {
         dur.as_secs().hash(hasher);
@@ -448,7 +482,7 @@ fn hash_time(t: &SystemTime, hasher: &mut DefaultHasher) {
     }
 }
 
-// Strip BOM, leading XML prolog, and comments before the root <svg> tag
+/// Strip BOM, leading XML prolog, and comments before the root `<svg>` tag.
 fn preprocess_svg_content(input: &str) -> String {
     let mut s = input.trim_start_matches('\u{feff}');
     // Iteratively skip whitespace + XML declarations or comments before <svg
@@ -484,6 +518,7 @@ fn preprocess_svg_content(input: &str) -> String {
 
 // sprite rendering moved to svg::transform
 
+/// Recompute cache entries for changed inputs and write out the sprite once.
 fn rebuild_once(
     directory: &str,
     file: &str,
@@ -558,6 +593,7 @@ fn rebuild_once(
     write_sprite_from_cache(file, cache, &paths, opts)
 }
 
+/// Parse and normalize a single SVG file into a cache entry.
 fn build_cache_entry(path: &std::path::Path) -> Result<CacheEntry, AppError> {
     let file_name = path
         .file_name()
@@ -668,6 +704,7 @@ fn build_cache_entry(path: &std::path::Path) -> Result<CacheEntry, AppError> {
     })
 }
 
+/// Write the sprite file from cached entries in the provided order.
 fn write_sprite_from_cache(
     file: &str,
     cache: &std::collections::HashMap<String, CacheEntry>,

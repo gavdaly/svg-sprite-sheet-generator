@@ -1,9 +1,14 @@
-// ID sanitization utilities
+//! ID sanitization utilities.
 
-// Sanitize an id by dropping leading invalid chars and replacing internal
-// invalid chars with '-'. Collapse multiple '-' and trim them at ends.
-// Allowed pattern: [A-Za-z_][A-Za-z0-9._-]*
-pub(crate) fn sanitize_id(raw: &str) -> String {
+/// Sanitize an id by dropping leading invalid chars and replacing internal
+/// invalid chars with '-' (collapsing repeats and trimming ends).
+/// Allowed pattern: `[A-Za-z_][A-Za-z0-9._-]*`.
+///
+/// Example:
+/// ```
+/// assert_eq!(svg_sheet::svg::sanitize::sanitize_id(" 123 bad"), "bad");
+/// ```
+pub fn sanitize_id(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut it = raw.chars().peekable();
     while let Some(&ch) = it.peek() {
@@ -34,9 +39,11 @@ pub(crate) fn sanitize_id(raw: &str) -> String {
     out
 }
 
+/// Return whether a char is a valid starting character for an id.
 fn is_valid_id_start(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphabetic()
 }
+/// Return whether a char is a valid continuing character for an id.
 fn is_valid_id_continue(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-'
 }
